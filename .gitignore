@@ -1,0 +1,11 @@
+# Track only the public game and publication configuration.
+/*
+!/.gitignore
+!/.nojekyll
+!/index.html
+!/style.css
+!/game.js
+!/vendor/
+/vendor/*
+!/vendor/three.module.js
+!/vendor/THREE-LICENSE.txt
