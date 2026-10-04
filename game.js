@@ -41,7 +41,6 @@ const dummy=new THREE.Object3D();
 const lilyGeo=new THREE.CylinderGeometry(1,1,1,9);
 const crownGeo=new THREE.IcosahedronGeometry(1,0);
 const tuftGeo=new THREE.BufferGeometry();tuftGeo.setAttribute('position',new THREE.Float32BufferAttribute([0,0,.5,-.5,0,-.5,.5,0,-.5],3));tuftGeo.computeVertexNormals();
-const turretGeo=new THREE.CylinderGeometry(.25,.29,.22,8);
 const cannonGeo=new THREE.CylinderGeometry(.061,.087,.49,10);
 const muzzleGeo=new THREE.CylinderGeometry(.047,.047,.013,10);
 const contactGeo=new THREE.CircleGeometry(1,16);contactGeo.rotateX(-Math.PI/2);
@@ -70,6 +69,12 @@ const hullGeo=new THREE.ExtrudeGeometry(hullShape,{depth:.8,bevelEnabled:true,be
 hullGeo.rotateX(Math.PI/2);hullGeo.center();hullGeo.computeBoundingBox();
 const hullSize=hullGeo.boundingBox.getSize(new THREE.Vector3());hullGeo.scale(1/hullSize.x,1/hullSize.y,1/hullSize.z);
 // Batch only static direct children. Keep water and obstacle groups addressable.
+// Tank-only shared shapes: clipped track ends and broad armour bevels stay inside the old bounds.
+const trackShape=new THREE.Shape();
+trackShape.moveTo(-.29,-.115);trackShape.lineTo(.29,-.115);trackShape.lineTo(.375,-.055);trackShape.lineTo(.375,.055);trackShape.lineTo(.29,.115);trackShape.lineTo(-.29,.115);trackShape.lineTo(-.375,.055);trackShape.lineTo(-.375,-.055);trackShape.closePath();
+const trackGeo=new THREE.ExtrudeGeometry(trackShape,{depth:.19,bevelEnabled:false,steps:1});trackGeo.rotateY(Math.PI/2);trackGeo.center();
+const tankContactMat=new THREE.MeshBasicMaterial({color:0x142728,map:contactTexture,transparent:true,opacity:.55,depthWrite:false});
+
 function batchStaticParts(parent,skip=new Set()){
  const batches=new Map();
  for(const part of [...parent.children]){
@@ -264,27 +269,38 @@ function makeEnvironment(){
 function makeTank(color,enemy=false){
  const g=new THREE.Group();
  const body=new THREE.Group();g.add(body);
- const trackMaterial=mat(0x263d3b);const wheelMaterial=mat(0x617c6b);
+ const dark=enemy?0x75243e:0x075863;
+ const armour=mat(color,{roughness:.36,metalness:.12});
+ const wheelMaterial=mat(0x617c6b),trackMaterial=mat(0x263d3b);
+ const contact=mesh(contactGeo,tankContactMat,0,.012,0,.395,1,.375);contact.castShadow=false;contact.receiveShadow=false;g.add(contact);
  for(const side of [-1,1]){
-  box(body,side*.285,.15,0,.19,.23,.75,0x263d3b);
+  body.add(mesh(trackGeo,trackMaterial,side*.285,.15,0));
   for(let w=-2;w<=2;w++){
-   const wheel=mesh(cylinderGeo,wheelMaterial,side*.39,.14,w*.14,.075,.018,.075);wheel.rotation.z=Math.PI/2;body.add(wheel);
+   const wheel=mesh(cylinderGeo,wheelMaterial,side*.386,.14,w*.14,.075,.026,.075);wheel.rotation.z=Math.PI/2;body.add(wheel);
+   const hub=mesh(cylinderGeo,trackMaterial,side*.398,.14,w*.14,.034,.002,.034);hub.rotation.z=Math.PI/2;body.add(hub);
   }
   for(let w=-3;w<=3;w++)box(body,side*.285,.274,w*.102,.2,.025,.052,0x40594e);
+  // Raised coloured fenders separate the hull from the dark tread silhouette.
+  body.add(mesh(hullGeo,armour,side*.285,.297,0,.185,.036,.67));
  }
- body.add(mesh(hullGeo,mat(color,{roughness:.36,metalness:.12}),0,.28,0,.61,.28,.7));
+ body.add(mesh(hullGeo,armour,0,.28,0,.61,.28,.7));
  for(const side of [-1,1]){
-  box(body,side*.19,.414,-.19,.11,.025,.17,enemy?0x8c234d:0x086777);
+  box(body,side*.19,.414,-.19,.11,.025,.17,dark);
   box(body,side*.23,.37,.24,.065,.035,.10,0xffdf8c,{emissive:0xffb833,emissiveIntensity:.65});
   box(body,side*.2,.25,-.35,.07,.07,.024,0xf35449);
  }
  for(let i=0;i<4;i++)box(body,(i-1.5)*.063,.418,-.225,.027,.016,.105,0x234b48);
- box(body,0,.41,-.14,.38,.04,.22,color);
- const turret=mesh(turretGeo,mat(color,{roughness:.33,metalness:.12}),0,.47,.02);body.add(turret);
- const hatchRim=mesh(cylinderGeo,mat(enemy?0x8c234d:0x086777),-.06,.603,-.04,.118,.025,.118);body.add(hatchRim);
- const cap=mesh(cylinderGeo,mat(color),-.06,.606,-.04,.1,.038,.1);body.add(cap);
- const cannon=mesh(cannonGeo,mat(color,{roughness:.3,metalness:.12}),0,.49,.39);cannon.rotation.x=Math.PI/2;body.add(cannon);
- const hole=mesh(muzzleGeo,mat(0x244743),0,.49,.641);hole.rotation.x=Math.PI/2;body.add(hole);
+ // Dark recessed seats create contact separation without another light or shadow map.
+ body.add(mesh(hullGeo,mat(dark),0,.417,.02,.5,.024,.49));
+ body.add(mesh(hullGeo,armour,0,.47,.02,.50,.22,.49));
+ body.add(mesh(hullGeo,mat(dark),0,.49,.243,.23,.145,.12));
+ body.add(mesh(hullGeo,armour,0,.49,.254,.20,.12,.13));
+ const hatchRim=mesh(cylinderGeo,mat(dark),-.06,.583,-.04,.118,.025,.118);body.add(hatchRim);
+ const cap=mesh(cylinderGeo,armour,-.06,.603,-.04,.1,.038,.1);body.add(cap);
+ box(body,-.06,.625,-.04,.065,.014,.022,dark);
+ const cannon=mesh(cannonGeo,armour,0,.49,.39);cannon.rotation.x=Math.PI/2;body.add(cannon);
+ const muzzleRim=mesh(cylinderGeo,mat(dark),0,.49,.615,.065,.05,.065);muzzleRim.rotation.x=Math.PI/2;body.add(muzzleRim);
+ const hole=mesh(muzzleGeo,mat(0x142728),0,.49,.641);hole.rotation.x=Math.PI/2;body.add(hole);
  box(body,0,.36,.347,.19,.06,.025,enemy?0xffceb3:0xffefb2,{emissive:enemy?0x702622:0x65703a,emissiveIntensity:.2});
  box(body,-.21,.38,-.29,.07,.02,.12,0x304d47);
  const antenna=mesh(cylinderGeo,mat(0x355347),.2,.54,-.23,.013,.3,.013);body.add(antenna);
@@ -378,7 +394,7 @@ function hitTank(t){
  t.hp--;burst(t.x,.5,t.z,t.enemy?0xef7590:0x65dbde,12,2.5);sound('hit');
  if(!t.enemy&&mode!=='duel'){shield=1.6;shake=.12;toast('Броня повреждена — двигайся!');}
  if(t.hp<=0){
-  t.dead=true;dynamic.remove(t.group);burst(t.x,.3,t.z,0xffbd55,24,3.5);
+  t.dead=true;t.group.traverse(o=>{if(o.isInstancedMesh)o.dispose();});dynamic.remove(t.group);burst(t.x,.3,t.z,0xffbd55,24,3.5);
   if(t.enemy){score+=100;if(player.hp<5&&random()<.5)pickup(t.x,t.z);enemies=enemies.filter(e=>e!==t);}
   else if(mode!=='duel')endGame(false);
  }
