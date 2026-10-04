@@ -78,3 +78,45 @@ body[data-screen-controls="off"] #touchControls { display: none; }
 @media (max-height: 500px) {
   #touchControls { bottom: 8px; left: 8px; right: 8px; }
 }
+
+/* The mobile arena is played in landscape; keep the canvas unrotated. */
+#orientationNotice { display: none; }
+.orientation-card {
+  width: 360px;
+  max-width: 100%;
+  margin: auto;
+  padding: 32px 26px;
+  border: 1px solid #ffffff4a;
+  border-radius: 24px;
+  background: #f8f7ee;
+  color: #24453c;
+  text-align: center;
+  box-shadow: 0 16px 80px #061b2840;
+}
+.orientation-icon {
+  width: 80px; height: 48px;
+  margin: 0 auto 28px;
+  border: 3px solid #438269;
+  border-radius: 12px;
+  background: #d9edc9;
+  display: grid; place-items: center;
+}
+.orientation-icon span { font-size: 32px; color: #294f40; }
+.orientation-card h2 { margin: 18px 0; }
+.orientation-card p { margin: 0; color: #5e7868; font-size: 14px; line-height: 1.7; }
+.orientation-note { display: block; margin-top: 24px; color: #718578; font-size: 12px; line-height: 1.6; }
+@media (orientation: portrait) and (pointer: coarse), (orientation: portrait) and (max-width: 850px) {
+  #viewport, .topbar, footer { visibility: hidden; pointer-events: none; }
+  #touchControls { visibility: hidden; }
+  #orientationNotice {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; overflow-y: auto;
+    padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+    background: radial-gradient(ellipse at 30% 10%, #43826955, transparent 65%), #102622;
+  }
+}
+@media (orientation: landscape) and (pointer: coarse), (orientation: landscape) and (max-width: 850px) {
+  .topbar { height: 56px; min-height: 56px; }
+  footer { display: none; }
+  #viewport { margin-bottom: 8px; }
+}

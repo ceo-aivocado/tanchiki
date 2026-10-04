@@ -46,6 +46,12 @@ const keys=new Set();const keyOrder=[];const tapUntil=new Map();const releasedKe
 const keyboardHeld=new Set(), touchPointers=new Map();
 const touchToggle=$('touchToggle');
 const screenMedia=window.matchMedia?.('(pointer: coarse), (max-width: 850px)');
+const portraitMedia=window.matchMedia?.('(orientation: portrait) and (pointer: coarse), (orientation: portrait) and (max-width: 850px)');
+const orientationBlocked=()=>!!portraitMedia?.matches;
+function syncOrientation(){
+ if(!orientationBlocked())return;
+ clearInputs();if(state==='playing')pauseGame();
+}
 if(document.body&&!document.body.dataset.screenControls)document.body.dataset.screenControls='auto';
 function screenControlsEnabled(){
  const choice=document.body?.dataset.screenControls||'auto';
@@ -302,11 +308,13 @@ function updateHUD(){
 function toast(message){$('toast').textContent=message;$('toast').classList.add('visible');toastTimer=2.8;}
 function clearInputs(){keyboardHeld.clear();clearTouchInputs();keys.clear();keyOrder.length=0;tapUntil.clear();releasedKeys.clear();}
 function pressInput(code){
+ if(orientationBlocked()){clearInputs();return;}
  if(!keys.has(code))keyOrder.push(code);
  keys.add(code);releasedKeys.delete(code);tapUntil.set(code,time+.08);
 }
 function releaseInput(code){releasedKeys.add(code);}
 function resetGame(newMode=mode){
+ if(orientationBlocked()){syncOrientation();return;}
  clearInputs();
  for(const b of bullets)for(const o of b.group.children)o.material.dispose();
  dynamic.clear();bullets.length=0;particles.length=0;pickups.length=0;enemies=[];
@@ -321,7 +329,7 @@ function showCard(title,description,button,eyebrow){
 }
 function pauseGame(){
  if(state==='playing'){state='paused';clearInputs();showCard('Небольшая<br><em>передышка.</em>','Полигон подождёт. Продолжай, когда захочется.','Продолжить','ПАУЗА');$('pause').textContent='▶';}
- else if(state==='paused'){state='playing';clearInputs();$('overlay').classList.add('hidden');$('pause').textContent='Ⅱ';viewport.focus();}
+ else if(state==='paused'&&!orientationBlocked()){state='playing';clearInputs();$('overlay').classList.add('hidden');$('pause').textContent='Ⅱ';viewport.focus();}
 }
 function endGame(won){
  state=won?'won':'lost';clearInputs();
@@ -341,6 +349,8 @@ function controlTank(t,dt,accepts,fire){
  if(keys.has(fire))shoot(t);
 }
 function update(dt){
+ // Also guard the frame if a media-change callback has not been delivered yet.
+ syncOrientation();
  time+=dt;
  if(state==='playing'){
   shield=Math.max(0,shield-dt);
@@ -406,6 +416,9 @@ function resize(){
 }
 new ResizeObserver(resize).observe(viewport);
 document.addEventListener('keydown',event=>{
+ if(orientationBlocked()&&(dirMap[event.code]||['Space','Enter','Escape'].includes(event.code))){
+  event.preventDefault();syncOrientation();return;
+ }
  if(mode==='duel'&&event.code==='Enter'){
   if(state==='playing'){event.preventDefault();keyboardHeld.add('Enter');pressInput('Enter');}
   else if(!(event.target instanceof HTMLButtonElement)||event.repeat)event.preventDefault();
@@ -428,8 +441,8 @@ function enableStartSound(){
  $('sound').classList.add('active');$('sound').setAttribute('aria-label','Выключить звук');$('sound').title='Выключить звук';
  sound('pickup');
 }
-$('play').addEventListener('click',()=>{enableStartSound();if(state==='paused')pauseGame();else resetGame(mode);});
-$('explore').addEventListener('click',()=>{if(mode!=='duel'){enableStartSound();resetGame('explore');}});
+$('play').addEventListener('click',()=>{if(orientationBlocked()){syncOrientation();return;}enableStartSound();if(state==='paused')pauseGame();else resetGame(mode);});
+$('explore').addEventListener('click',()=>{if(mode!=='duel'&&!orientationBlocked()){enableStartSound();resetGame('explore');}});
 $('pause').addEventListener('click',()=>{pauseGame();viewport.focus();});
 $('restart').addEventListener('click',()=>resetGame(mode));
 $('sound').addEventListener('click',()=>{soundChosen=true;muted=!muted;$('sound').classList.toggle('active',!muted);$('sound').setAttribute('aria-label',muted?'Включить звук':'Выключить звук');$('sound').title=muted?'Включить звук':'Выключить звук';if(!muted)sound('pickup');viewport.focus();});
@@ -441,6 +454,9 @@ touchToggle?.addEventListener('click',()=>{
 if(screenMedia?.addEventListener)screenMedia.addEventListener('change',syncScreenControls);
 else screenMedia?.addListener?.(syncScreenControls);
 syncScreenControls();
+if(portraitMedia?.addEventListener)portraitMedia.addEventListener('change',syncOrientation);
+else portraitMedia?.addListener?.(syncOrientation);
+syncOrientation();
 for(const button of document.querySelectorAll('[data-key]')){
  button.addEventListener('pointerdown',e=>{
   e.preventDefault();
