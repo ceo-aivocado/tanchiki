@@ -313,8 +313,12 @@ function makeTank(color,enemy=false){
 let shieldRing;
 function makePlayer(){
  player=makeTank(0x24bbce);player.x=0;player.z=5;player.group.position.set(0,0,5);player.group.rotation.y=Math.PI;
- const geometry=new THREE.TorusGeometry(.54,.015,5,40);
- shieldRing=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color:0xaafaff,transparent:true,opacity:.55}));shieldRing.rotation.x=Math.PI/2;shieldRing.position.y=.075;player.group.add(shieldRing);
+ // The shield belongs to the game session; reattach it to the new player on reset.
+ if(!shieldRing){
+  const geometry=new THREE.TorusGeometry(.54,.015,5,40);
+  shieldRing=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color:0xaafaff,transparent:true,opacity:.55}));shieldRing.rotation.x=Math.PI/2;shieldRing.position.y=.075;
+ }
+ player.group.add(shieldRing);
 }
 function makePlayers(){
  makePlayer();player2=null;
