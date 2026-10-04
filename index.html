@@ -8,12 +8,12 @@
   <title>Танчики · Солнечный полигон</title>
   <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body data-screen-controls="auto">
   <main id="app">
     <header class="topbar">
       <div class="brand"><span class="brand-icon">✦</span><div><h1>ТАНЧИКИ</h1><span>СОЛНЕЧНЫЙ ПОЛИГОН</span></div></div>
       <div class="stats"><div class="stat"><span>БРОНЯ</span><strong id="health" aria-label="Броня">♥ ♥ ♥ ♥ ♥</strong></div><div class="stat"><span id="roundLabel">ВОЛНА</span><strong id="wave">01 / 03</strong></div><div class="stat"><span>ОЧКИ</span><strong id="score">000</strong></div></div>
-      <nav><button id="sound" class="icon-button" title="Включить звук" aria-label="Включить звук">♪</button><button id="pause" class="icon-button" title="Пауза — Escape" aria-label="Пауза">Ⅱ</button><button id="restart" class="small-button">Заново <span>↻</span></button></nav>
+      <nav><button id="touchToggle" type="button" class="small-button" aria-controls="touchControls" aria-pressed="false">Управление</button><button id="sound" class="icon-button" title="Включить звук" aria-label="Включить звук">♪</button><button id="pause" class="icon-button" title="Пауза — Escape" aria-label="Пауза">Ⅱ</button><button id="restart" class="small-button">Заново <span>↻</span></button></nav>
     </header>
     <section id="viewport" aria-label="Игровое поле" tabindex="0">
       <div id="loading">Выращиваем полигон…</div>

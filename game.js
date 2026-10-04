@@ -42,6 +42,35 @@ const duelRequested=new URLSearchParams(window.location.search).get('mode')==='d
 let enemies=[],player,player2,score=0,wave=1,mode=duelRequested?'duel':'battle',state='intro',spawnQueue=0,spawnTimer=0,transitionTimer=0,shield=0,toastTimer=0,time=0,shake=0,lastShot=0;
 let muted=true,audioContext,soundChosen=false;
 const keys=new Set();const keyOrder=[];const tapUntil=new Map();const releasedKeys=new Set();
+// Track physical sources separately: one finger releasing must not release another.
+const keyboardHeld=new Set(), touchPointers=new Map();
+const touchToggle=$('touchToggle');
+const screenMedia=window.matchMedia?.('(pointer: coarse), (max-width: 850px)');
+if(document.body&&!document.body.dataset.screenControls)document.body.dataset.screenControls='auto';
+function screenControlsEnabled(){
+ const choice=document.body?.dataset.screenControls||'auto';
+ return !duelRequested&&(choice==='on'||(choice==='auto'&&!!screenMedia?.matches));
+}
+function removeInput(code){
+ keys.delete(code);tapUntil.delete(code);releasedKeys.delete(code);
+ const index=keyOrder.indexOf(code);if(index>=0)keyOrder.splice(index,1);
+}
+function releaseOwnedInput(code,immediate=false){
+ if(keyboardHeld.has(code)||[...touchPointers.values()].some(p=>p.code===code))return;
+ if(immediate)removeInput(code);else releaseInput(code);
+}
+function clearTouchInputs(){
+ const pointers=[...touchPointers.entries()];touchPointers.clear();
+ for(const [id,p] of pointers){
+  releaseOwnedInput(p.code,true);
+  try{if(p.button.hasPointerCapture?.(id))p.button.releasePointerCapture(id);}catch{}
+ }
+}
+function syncScreenControls(){
+ const enabled=screenControlsEnabled();
+ touchToggle?.setAttribute('aria-pressed',String(enabled));
+ if(!enabled)clearTouchInputs();
+}
 const dirMap={KeyW:[0,-1],ArrowUp:[0,-1],KeyS:[0,1],ArrowDown:[0,1],KeyA:[-1,0],ArrowLeft:[-1,0],KeyD:[1,0],ArrowRight:[1,0]};
 const fxGeometry=new THREE.BoxGeometry(1,1,1);
 const bulletGeo=new THREE.SphereGeometry(.075,7,5);
@@ -271,7 +300,7 @@ function updateHUD(){
  $('score').textContent=String(score).padStart(3,'0');$('modeTag').textContent=mode==='explore'?'ПРОГУЛКА':'АРКАДА';
 }
 function toast(message){$('toast').textContent=message;$('toast').classList.add('visible');toastTimer=2.8;}
-function clearInputs(){keys.clear();keyOrder.length=0;tapUntil.clear();releasedKeys.clear();}
+function clearInputs(){keyboardHeld.clear();clearTouchInputs();keys.clear();keyOrder.length=0;tapUntil.clear();releasedKeys.clear();}
 function pressInput(code){
  if(!keys.has(code))keyOrder.push(code);
  keys.add(code);releasedKeys.delete(code);tapUntil.set(code,time+.08);
@@ -378,19 +407,19 @@ function resize(){
 new ResizeObserver(resize).observe(viewport);
 document.addEventListener('keydown',event=>{
  if(mode==='duel'&&event.code==='Enter'){
-  if(state==='playing'){event.preventDefault();pressInput('Enter');}
+  if(state==='playing'){event.preventDefault();keyboardHeld.add('Enter');pressInput('Enter');}
   else if(!(event.target instanceof HTMLButtonElement)||event.repeat)event.preventDefault();
   return;
  }
  if(dirMap[event.code]||event.code==='Space'){
   if(event.target instanceof HTMLButtonElement){if(event.code==='Space'&&state!=='playing')return;}
   event.preventDefault();if(state!=='playing')return;
-  pressInput(event.code);
+  keyboardHeld.add(event.code);pressInput(event.code);
  }
  if(event.code==='Escape'){event.preventDefault();if(!event.repeat)pauseGame();}
  if(event.code==='Enter'&&state==='intro')resetGame('battle');
 });
-document.addEventListener('keyup',event=>releaseInput(event.code));
+document.addEventListener('keyup',event=>{keyboardHeld.delete(event.code);releaseOwnedInput(event.code);});
 window.addEventListener('blur',()=>{clearInputs();if(state==='playing')pauseGame();});
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&state==='playing')pauseGame();});
 function enableStartSound(){
@@ -404,15 +433,36 @@ $('explore').addEventListener('click',()=>{if(mode!=='duel'){enableStartSound();
 $('pause').addEventListener('click',()=>{pauseGame();viewport.focus();});
 $('restart').addEventListener('click',()=>resetGame(mode));
 $('sound').addEventListener('click',()=>{soundChosen=true;muted=!muted;$('sound').classList.toggle('active',!muted);$('sound').setAttribute('aria-label',muted?'Включить звук':'Выключить звук');$('sound').title=muted?'Включить звук':'Выключить звук';if(!muted)sound('pickup');viewport.focus();});
+touchToggle?.addEventListener('click',()=>{
+ if(duelRequested)return;
+ document.body.dataset.screenControls=screenControlsEnabled()?'off':'on';
+ syncScreenControls();
+});
+if(screenMedia?.addEventListener)screenMedia.addEventListener('change',syncScreenControls);
+else screenMedia?.addListener?.(syncScreenControls);
+syncScreenControls();
 for(const button of document.querySelectorAll('[data-key]')){
- button.addEventListener('pointerdown',e=>{e.preventDefault();if(state!=='playing')return;button.setPointerCapture(e.pointerId);pressInput(button.dataset.key);});
- const release=()=>releaseInput(button.dataset.key);
- button.addEventListener('pointerup',release);button.addEventListener('pointercancel',release);button.addEventListener('lostpointercapture',release);
+ button.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  if(state!=='playing'||!screenControlsEnabled()||e.button!==0)return;
+  const code=button.dataset.key;
+  touchPointers.set(e.pointerId,{code,button});
+  button.setPointerCapture(e.pointerId);pressInput(code);
+ });
+ const release=(e,immediate)=>{
+  const p=touchPointers.get(e.pointerId);
+  if(!p||p.button!==button)return;
+  touchPointers.delete(e.pointerId);releaseOwnedInput(p.code,immediate);
+ };
+ button.addEventListener('pointerup',e=>release(e,false));
+ button.addEventListener('pointercancel',e=>release(e,true));
+ button.addEventListener('lostpointercapture',e=>release(e,true));
 }
 makeLayout();makeEnvironment();makePlayers();updateHUD();resize();$('loading').remove();
 if(duelRequested){
  showCard('Два танка.<br><em>Одна клавиатура.</em>','Игрок 1 — бирюзовый: WASD и Пробел. Игрок 2 — розовый: стрелки и Enter. У каждого 5 единиц брони. Побеждает тот, кто первым лишит соперника брони.','Начать дуэль','ЛОКАЛЬНЫЙ ЭКСПЕРИМЕНТ 1 × 1');
  $('explore').style.display='none';$('touchControls').style.display='none';
+ if(touchToggle)touchToggle.style.display='none';
  $('cardNote').textContent='Нужны два игрока и одна физическая клавиатура · Esc — пауза';
  const hint=document.querySelector('.control-hint');
  if(hint)hint.textContent='Игрок 1: WASD + Пробел · Игрок 2: стрелки + Enter · Esc — пауза';
