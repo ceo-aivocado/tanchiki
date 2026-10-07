@@ -1,4 +1,4 @@
-import {PROFILES,STUDY,studyWalls,routePoints} from './hybrid-experiments.mjs?v=20261007-t034-3';
+import {PROFILES,STUDY,ARMOR,studyWalls,routePoints} from './hybrid-experiments.mjs?v=20261007-t035-1';
 // Pure, deterministic local simulation. No DOM/Three/network authority claimed.
 export const CONFIG=Object.freeze({width:20,height:12,seed:20261006,baseHP:30,tankHP:5,minionHP:2,minions:2,tankRespawn:4,minionRespawn:6.5,speed:3.2,minionSpeed:1.25,shotDelay:.65,tankShotDelay:.95,tankArcDelay:3.6,tankDamage:2,tankArcDamage:3,minionShotDelay:1.2,damage:1,acceleration:10,drag:2.6,recoil:.7,hitImpulse:2.5,gravity:9,highFlight:2.4,lowFlight:1.2,arcShotDelay:2.8,maxArcShots:1,directRange:3.2,rocketRange:6,splashRadius:1,inheritVelocity:.15});
 export const VERSIONS=['0.1','0.2','0.3'];
@@ -20,6 +20,7 @@ export function createMatch({version='0.1',bot=false,map='maze',experiment='lega
  if(experiment==='legacy')walls.push({id:'shed-0',x:-5,z:4.8,w:1.2,d:.9,h:1.1,hp:version==='0.3'?3:0,loot:'rocket'},{id:'shed-1',x:5,z:-4.8,w:1.2,d:.9,h:1.1,hp:version==='0.3'?3:0,loot:'rapid'});
  const result={version,experiment,map:experiment!=='legacy'?STUDY.mapId:version==='0.3'?map:'lanes',bot,cfg,bases,units,walls,pickups:[],shots:[],events:[],status:'intro',winner:null,time:0,nextShot:0,navRevision:0,navCache:null};
  if(experiment!=='legacy'){result.teamOrders=['split','split'];result.splitNext=[0,0];result.units.filter(u=>u.kind==='minion').forEach(u=>{const i=Number(u.id.split('-')[1]);u.x=u.sx;u.z=u.sz=(i===1?-.8:.8);u.stage=0;u.assignedLane=null;});}
+ if(experiment==='armor')result.units.filter(u=>u.kind==='tank').forEach(u=>u.armor={charges:ARMOR.maxCharges,lastHit:0,moved:0});
  return result;
 }
 function createMaze(){
@@ -147,9 +148,19 @@ function collideUnits(m){
  }
 }
 function damage(m,target,amount,s){
- if(target.hp<=0||target.shield>0)return;const applied=Math.min(target.hp,amount);target.hp=Math.max(0,target.hp-amount);
- m.events.push({type:'hit',x:target.x,z:target.z,team:target.team,...({attacker:{id:s.owner,team:s.team,kind:m.units.find(u=>u.id===s.owner).kind},target:target.id||`base-${target.team}`,weapon:s.weapon,rawDamage:amount,appliedDamage:applied})});
- if(!target.kind)m.events.push({type:'baseDamage',attacker:{id:s.owner,team:s.team,kind:m.units.find(u=>u.id===s.owner).kind},target:`base-${target.team}`,weapon:s.weapon,rawDamage:amount,appliedDamage:applied});
+ if(target.hp<=0)return;
+ const rawDamage=amount;
+ if(target.armor){
+  target.armor.lastHit=m.time;target.armor.moved=0;
+  const incoming=angle(-s.vx,-s.vz),difference=Math.atan2(Math.sin(incoming-target.yaw),Math.cos(incoming-target.yaw));
+  if(target.shield<=0&&!s.ballistic&&['direct','rapid'].includes(s.weapon)&&target.armor.charges>0&&Math.abs(difference)<=ARMOR.halfAngle+1e-9){
+   const absorbed=Math.min(1,amount);amount-=absorbed;target.armor.charges--;
+   m.events.push({type:'shield_absorb',id:target.id,team:target.team,attacker:{id:s.owner,team:s.team},weapon:s.weapon,rawDamage,absorbedDamage:absorbed,appliedDamage:Math.min(target.hp,amount),charges:target.armor.charges,x:target.x,z:target.z});
+  }
+ }
+ if(target.shield>0)return;const applied=Math.min(target.hp,amount);target.hp=Math.max(0,target.hp-amount);
+ m.events.push({type:'hit',x:target.x,z:target.z,team:target.team,...({attacker:{id:s.owner,team:s.team,kind:m.units.find(u=>u.id===s.owner).kind},target:target.id||`base-${target.team}`,weapon:s.weapon,rawDamage,appliedDamage:applied})});
+ if(!target.kind)m.events.push({type:'baseDamage',attacker:{id:s.owner,team:s.team,kind:m.units.find(u=>u.id===s.owner).kind},target:`base-${target.team}`,weapon:s.weapon,rawDamage,appliedDamage:applied});
  if(!target.kind&&target.hp===0)m.events.push({type:'baseDestroyed',team:target.team,x:target.x,z:target.z});
  if(target.kind&&target.hp===0){target.respawn=target.kind==='tank'?m.cfg.tankRespawn:m.cfg.minionRespawn;target.vx=target.vz=0;m.events.push({type:'death',id:target.id,x:target.x,z:target.z,...(m.experiment!=='legacy'?{team:target.team,kind:target.kind,lane:target.assignedLane}: {})});}
 }
@@ -258,12 +269,13 @@ export function step(m,dt,inputs={}){
  if(m.status!=='playing')return;
  if(!Number.isFinite(dt)||dt<=0||dt>1/30+.000001)throw new Error('Use fixed steps <= 1/30');
  m.events=[];m.time+=dt;
+ const armorPositions=m.experiment==='armor'?new Map(m.units.filter(u=>u.armor&&u.hp>0).map(u=>[u.id,{x:u.x,z:u.z}])):null;
  if(m.experiment==='orders')for(const team of [0,1]){const order=inputs[team]?.order;if((!m.bot||team===0)&&['split','up','down'].includes(order)&&order!==m.teamOrders[team]){m.teamOrders[team]=order;m.events.push({type:'order',team,order});}}
  for(const u of m.units){
   if(u.hp<=0){
    u.respawn-=dt;
    if(u.respawn<=0&&!blocked(m,u,u.sx,u.sz)&&!m.units.some(o=>o!==u&&o.hp>0&&Math.hypot(o.x-u.sx,o.z-u.sz)<o.r+u.r)){
-    u.x=u.sx;u.z=u.sz;u.hp=u.maxHP;u.ammo={rocket:0,rapid:0};u.shell='arc';u.cooldown=.3;u.shield=.8;u.vx=u.vz=0;u.patrol=null;u.route=null;u.stuck=0;u.bestDistance=undefined;u.detours=0;if(m.experiment!=='legacy'){u.stage=0;u.assignedLane=null;}m.events.push({type:'respawn',id:u.id,x:u.x,z:u.z,...(m.experiment!=='legacy'?{team:u.team,kind:u.kind}: {})});
+    u.x=u.sx;u.z=u.sz;u.hp=u.maxHP;u.ammo={rocket:0,rapid:0};u.shell='arc';u.cooldown=.3;u.shield=.8;u.vx=u.vz=0;u.patrol=null;u.route=null;u.stuck=0;u.bestDistance=undefined;u.detours=0;if(m.experiment!=='legacy'){u.stage=0;u.assignedLane=null;}if(u.armor)u.armor={charges:ARMOR.maxCharges,lastHit:m.time,moved:0};m.events.push({type:'respawn',id:u.id,x:u.x,z:u.z,...(m.experiment!=='legacy'?{team:u.team,kind:u.kind}: {})});
    }
    continue;
   }
@@ -277,7 +289,7 @@ export function step(m,dt,inputs={}){
    const v=Math.hypot(u.vx,u.vz),max=length>.01?speed:5;
    if(v>max){u.vx*=max/v;u.vz*=max/v;}
   }
-  if(length>.01)u.yaw=angle(dx,dz);
+  if(length>.01){const desired=angle(dx,dz);if(m.experiment==='armor'&&u.kind==='tank'){const delta=Math.atan2(Math.sin(desired-u.yaw),Math.cos(desired-u.yaw));u.yaw+=clamp(delta,-ARMOR.turnSpeed*dt,ARMOR.turnSpeed*dt);}else u.yaw=desired;}
   if(m.version==='0.1')u.turret=Number.isFinite(c.aim)?c.aim:u.yaw;
   else if(Number.isFinite(c.aim))u.turret=c.aim;else u.turret+=(c.turn||0)*2.5*dt;
   if(c.range)u.range=clamp(c.range,2,8);else u.range=clamp(u.range+(c.rangeDelta||0)*3*dt,2,8);
@@ -307,6 +319,9 @@ export function step(m,dt,inputs={}){
   }
   return true;
  });
+ if(armorPositions)for(const u of m.units){const previous=armorPositions.get(u.id);if(!previous||u.hp<=0||u.armor.lastHit>=m.time)continue;u.armor.moved+=Math.hypot(u.x-previous.x,u.z-previous.z);
+  if(u.armor.charges<ARMOR.maxCharges&&m.time-u.armor.lastHit>=ARMOR.rechargeSeconds-1e-9&&u.armor.moved>=ARMOR.rechargeDistance-1e-9){u.armor.charges=ARMOR.maxCharges;m.events.push({type:'shield_recharge',id:u.id,team:u.team,charges:ARMOR.maxCharges,x:u.x,z:u.z});}
+ }
  if(m.bases.some(b=>b.hp===0)){m.status='finished';const alive=m.bases.filter(b=>b.hp>0);m.winner=alive.length===1?alive[0].team:null;m.events.push({type:'victory',team:m.winner});}
 }
 
