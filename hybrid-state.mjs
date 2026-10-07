@@ -1,5 +1,5 @@
 // Pure, deterministic local simulation. No DOM/Three/network authority claimed.
-export const CONFIG=Object.freeze({width:20,height:12,seed:20261006,baseHP:30,tankHP:5,minionHP:2,minions:2,tankRespawn:4,minionRespawn:6.5,speed:3.2,minionSpeed:1.25,shotDelay:.65,minionShotDelay:1.2,damage:1,acceleration:10,drag:2.6,recoil:.7,hitImpulse:2.5,gravity:9,highFlight:2.4,lowFlight:1.2,arcShotDelay:2.8,maxArcShots:1,directRange:3.2,rocketRange:6,splashRadius:1,inheritVelocity:.15});
+export const CONFIG=Object.freeze({width:20,height:12,seed:20261006,baseHP:30,tankHP:5,minionHP:2,minions:2,tankRespawn:4,minionRespawn:6.5,speed:3.2,minionSpeed:1.25,shotDelay:.65,tankShotDelay:.95,tankArcDelay:3.6,tankDamage:2,tankArcDamage:3,minionShotDelay:1.2,damage:1,acceleration:10,drag:2.6,recoil:.7,hitImpulse:2.5,gravity:9,highFlight:2.4,lowFlight:1.2,arcShotDelay:2.8,maxArcShots:1,directRange:3.2,rocketRange:6,splashRadius:1,inheritVelocity:.15});
 export const VERSIONS=['0.1','0.2','0.3'];
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export const angle=(x,z)=>Math.atan2(x,z);
@@ -174,11 +174,11 @@ export function fire(m,u){
  if(weapon==='arc'&&m.shots.filter(s=>s.owner===u.id&&s.ballistic).length>=m.cfg.maxArcShots)return null;
  const speed=weapon==='rocket'?10.5:weapon==='rapid'?14:8;
  const dx=Math.sin(u.turret),dz=Math.cos(u.turret);
- const shot={id:m.nextShot++,team:u.team,owner:u.id,x:u.x+dx*(u.r+.08),z:u.z+dz*(u.r+.08),y:.35,vx:dx*speed,vz:dz*speed,life:2.5,ballistic:false,weapon,damage:weapon==='rocket'?2:m.cfg.damage,splash:weapon==='rocket'?1.4:m.cfg.splashRadius,remainingRange:m.version==='0.3'&&weapon!=='arc'?(weapon==='rocket'?m.cfg.rocketRange:m.cfg.directRange):Infinity};
+ const shot={id:m.nextShot++,team:u.team,owner:u.id,x:u.x+dx*(u.r+.08),z:u.z+dz*(u.r+.08),y:.35,vx:dx*speed,vz:dz*speed,life:2.5,ballistic:false,weapon,damage:weapon==='rocket'?2:m.version==='0.3'&&u.kind==='tank'?(weapon==='arc'?m.cfg.tankArcDamage:weapon==='rapid'?m.cfg.damage:m.cfg.tankDamage):m.cfg.damage,splash:weapon==='rocket'?1.4:m.cfg.splashRadius,remainingRange:m.version==='0.3'&&weapon!=='arc'?(weapon==='rocket'?m.cfg.rocketRange:m.cfg.directRange):Infinity};
  if(weapon==='arc'){
   const t=trajectory(m,u);Object.assign(shot,{x:t.ox,z:t.oz,y:t.launchY,launchY:t.launchY,gravity:t.gravity,ox:t.ox,oz:t.oz,vx:t.vx,vz:t.vz,vy:t.vy,age:0,flight:t.time,tx:t.x,tz:t.z,life:t.time+.1,ballistic:true});
  }
- m.shots.push(shot);u.cooldown=weapon==='arc'?m.cfg.arcShotDelay:u.kind==='tank'?(weapon==='rapid'?.22:m.cfg.shotDelay):m.cfg.minionShotDelay;
+ m.shots.push(shot);u.cooldown=weapon==='arc'?(u.kind==='tank'?m.cfg.tankArcDelay:m.cfg.arcShotDelay):u.kind==='tank'?(weapon==='rapid'?.22:m.version==='0.3'?m.cfg.tankShotDelay:m.cfg.shotDelay):m.cfg.minionShotDelay;
  if(weapon==='rocket'||weapon==='rapid'){u.ammo[weapon]--;if(u.ammo[weapon]===0)u.shell='direct';}
  if(m.version!=='0.1'){u.vx-=dx*m.cfg.recoil;u.vz-=dz*m.cfg.recoil;}
  m.events.push({type:'fire',id:u.id,x:shot.x,z:shot.z,weapon});return shot;
