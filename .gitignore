@@ -10,3 +10,7 @@
 !/vendor/three.module.js
 !/vendor/THREE-LICENSE.txt
 !/visual-slice.html
+!/hybrid.html
+!/hybrid.js
+!/hybrid.css
+!/hybrid-state.mjs
