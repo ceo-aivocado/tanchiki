@@ -1,4 +1,4 @@
-import {PROFILES,STUDY,ARMOR,studyWalls,routePoints} from './hybrid-experiments.mjs?v=20261007-t035-1';
+import {PROFILES,STUDY,ARMOR,SUPPLY,studyWalls,routePoints} from './hybrid-experiments.mjs?v=20261007-t036-1';
 // Pure, deterministic local simulation. No DOM/Three/network authority claimed.
 export const CONFIG=Object.freeze({width:20,height:12,seed:20261006,baseHP:30,tankHP:5,minionHP:2,minions:2,tankRespawn:4,minionRespawn:6.5,speed:3.2,minionSpeed:1.25,shotDelay:.65,tankShotDelay:.95,tankArcDelay:3.6,tankDamage:2,tankArcDamage:3,minionShotDelay:1.2,damage:1,acceleration:10,drag:2.6,recoil:.7,hitImpulse:2.5,gravity:9,highFlight:2.4,lowFlight:1.2,arcShotDelay:2.8,maxArcShots:1,directRange:3.2,rocketRange:6,splashRadius:1,inheritVelocity:.15});
 export const VERSIONS=['0.1','0.2','0.3'];
@@ -21,6 +21,7 @@ export function createMatch({version='0.1',bot=false,map='maze',experiment='lega
  const result={version,experiment,map:experiment!=='legacy'?STUDY.mapId:version==='0.3'?map:'lanes',bot,cfg,bases,units,walls,pickups:[],shots:[],events:[],status:'intro',winner:null,time:0,nextShot:0,navRevision:0,navCache:null};
  if(experiment!=='legacy'){result.teamOrders=['split','split'];result.splitNext=[0,0];result.units.filter(u=>u.kind==='minion').forEach(u=>{const i=Number(u.id.split('-')[1]);u.x=u.sx;u.z=u.sz=(i===1?-.8:.8);u.stage=0;u.assignedLane=null;});}
  if(experiment==='armor')result.units.filter(u=>u.kind==='tank').forEach(u=>u.armor={charges:ARMOR.maxCharges,lastHit:0,moved:0});
+ if(experiment==='supply')result.supply={nextSpawn:SUPPLY.first,cycle:0};
  return result;
 }
 function createMaze(){
@@ -162,7 +163,7 @@ function damage(m,target,amount,s){
  m.events.push({type:'hit',x:target.x,z:target.z,team:target.team,...({attacker:{id:s.owner,team:s.team,kind:m.units.find(u=>u.id===s.owner).kind},target:target.id||`base-${target.team}`,weapon:s.weapon,rawDamage,appliedDamage:applied})});
  if(!target.kind)m.events.push({type:'baseDamage',attacker:{id:s.owner,team:s.team,kind:m.units.find(u=>u.id===s.owner).kind},target:`base-${target.team}`,weapon:s.weapon,rawDamage,appliedDamage:applied});
  if(!target.kind&&target.hp===0)m.events.push({type:'baseDestroyed',team:target.team,x:target.x,z:target.z});
- if(target.kind&&target.hp===0){target.respawn=target.kind==='tank'?m.cfg.tankRespawn:m.cfg.minionRespawn;target.vx=target.vz=0;m.events.push({type:'death',id:target.id,x:target.x,z:target.z,...(m.experiment!=='legacy'?{team:target.team,kind:target.kind,lane:target.assignedLane}: {})});}
+ if(target.kind&&target.hp===0){if(m.experiment==='supply'){target.ammo={rocket:0,rapid:0};target.shell='arc';}target.respawn=target.kind==='tank'?m.cfg.tankRespawn:m.cfg.minionRespawn;target.vx=target.vz=0;m.events.push({type:'death',id:target.id,x:target.x,z:target.z,...(m.experiment!=='legacy'?{team:target.team,kind:target.kind,lane:target.assignedLane}: {})});}
 }
 function damageWall(m,w,amount){
  if(w.hp<=0||!Number.isFinite(w.hp))return;
@@ -179,8 +180,11 @@ function collect(m,u){
  m.pickups=m.pickups.filter(p=>{
   if(Math.hypot(p.x-u.x,p.z-u.z)>u.r+.35)return true;
   if(p.type==='repair'&&u.hp===u.maxHP)return true;
+  if(m.experiment==='supply'&&p.type==='rocket'&&u.ammo.rocket>=SUPPLY.ammoCap)return true;
+  const healthBefore=u.hp,ammoBefore=u.ammo.rocket;
   if(p.type==='repair')u.hp=Math.min(u.maxHP,u.hp+2);
   else{u.ammo[p.type]=Math.min(p.type==='rocket'?6:24,u.ammo[p.type]+(p.type==='rocket'?3:12));u.shell=p.type;}
+  if(m.experiment==='supply')m.events.push({type:'supply_collect',id:p.id,pointId:p.pointId,resourceType:p.type,unitId:u.id,team:u.team,time:m.time,x:p.x,z:p.z,healthEffect:u.hp-healthBefore,ammoEffect:u.ammo.rocket-ammoBefore,healthAfter:u.hp,ammoAfter:u.ammo.rocket});
   m.events.push({type:'collect',id:u.id,x:u.x,z:u.z,loot:p.type});return false;
  });
 }
@@ -269,6 +273,10 @@ export function step(m,dt,inputs={}){
  if(m.status!=='playing')return;
  if(!Number.isFinite(dt)||dt<=0||dt>1/30+.000001)throw new Error('Use fixed steps <= 1/30');
  m.events=[];m.time+=dt;
+ if(m.experiment==='supply'){
+  m.pickups=m.pickups.filter(p=>{if(m.time+1e-9<p.expiresAt)return true;m.events.push({type:'supply_expire',id:p.id,pointId:p.pointId,resourceType:p.type,time:p.expiresAt,x:p.x,z:p.z});return false;});
+  if(m.time+1e-9>=m.supply.nextSpawn){const time=m.supply.nextSpawn;for(const point of SUPPLY.points){const p={...point,id:`supply-${point.id}-${m.supply.cycle}`,pointId:point.id,spawnedAt:time,expiresAt:time+SUPPLY.lifetime};m.pickups.push(p);m.events.push({type:'supply_spawn',id:p.id,pointId:p.pointId,resourceType:p.type,time,x:p.x,z:p.z,expiresAt:p.expiresAt});}m.supply.cycle++;m.supply.nextSpawn=SUPPLY.first+m.supply.cycle*SUPPLY.interval;}
+ }
  const armorPositions=m.experiment==='armor'?new Map(m.units.filter(u=>u.armor&&u.hp>0).map(u=>[u.id,{x:u.x,z:u.z}])):null;
  if(m.experiment==='orders')for(const team of [0,1]){const order=inputs[team]?.order;if((!m.bot||team===0)&&['split','up','down'].includes(order)&&order!==m.teamOrders[team]){m.teamOrders[team]=order;m.events.push({type:'order',team,order});}}
  for(const u of m.units){
