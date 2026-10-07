@@ -14,3 +14,7 @@
 !/hybrid.js
 !/hybrid.css
 !/hybrid-state.mjs
+
+!/hybrid-experiments.mjs
+
+!/hybrid-session.mjs

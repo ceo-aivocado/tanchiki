@@ -1,8 +1,14 @@
 import * as THREE from './vendor/three.module.js';
-import {createMatch,start,setPaused,step,trajectory,projectilePose,VERSIONS,availableWeapons} from './hybrid-state.mjs?v=20261007-joystick1';
+import {createMatch,start,setPaused,step,trajectory,projectilePose,VERSIONS,availableWeapons} from './hybrid-state.mjs?v=20261007-t034-3';
+import {BUILD_ID,PROFILES,parseSeed,warningFor} from './hybrid-experiments.mjs?v=20261007-t034-3';
+import {createRun,recordStep,recordEvent,finishRun,createStore} from './hybrid-session.mjs?v=20261007-t034-3';
 const $=id=>document.getElementById(id),viewport=$('viewport');
 const params=new URLSearchParams(location.search);
-let match=createMatch({version:VERSIONS.includes(params.get('v'))?params.get('v'):VERSIONS.at(-1),bot:params.get('bot')!=='0',map:params.get('map')==='lanes'?'lanes':'maze'});
+let requestedExperiment=PROFILES[params.get('experiment')]?params.get('experiment'):'legacy',setupError='',initialSeed=20261006;try{initialSeed=parseSeed(params.get('seed'));}catch(e){setupError=e.message;}
+const initialVersion=VERSIONS.includes(params.get('v'))?params.get('v'):VERSIONS.at(-1);if(requestedExperiment!=='legacy'&&initialVersion!=='0.3')setupError='Этот вариант работает в версии 0.3. Нажми «Перейти на 0.3».';
+let run=null,pendingOrders={},lastSavedSecond=-1;
+const runStore=createStore({getItem(key){return window.localStorage.getItem(key);},setItem(key,val){window.localStorage.setItem(key,val);}});
+let match=createMatch({version:VERSIONS.includes(params.get('v'))?params.get('v'):VERSIONS.at(-1),bot:params.get('bot')!=='0',map:params.get('map')==='lanes'?'lanes':'maze',experiment:initialVersion==='0.3'?requestedExperiment:'legacy',config:{seed:initialSeed}});
 let keys=new Set(),pointers=new Map(),tapUntil=new Map(),released=new Set(),pendingFire=false,fireGesture=null,stickGesture=null,stick={x:0,z:0},stickAim=null,aimPoint=null,accumulator=0,last=performance.now(),muted=true,soundChosen=false,audio,notice='',noticeUntil=0,endReveal=0;
 const portrait=matchMedia('(orientation:portrait) and (max-width:900px), (orientation:portrait) and (pointer:coarse)');
 const scene=new THREE.Scene();scene.background=new THREE.Color(0x668645);
@@ -63,7 +69,7 @@ for(const b of match.bases){
  for(let j=0;j<4;j++)box(g,0xf0dbb0,(j%2-.5)*1.02,1.1,(Math.floor(j/2)-.5)*1.02,.28,.36,.28);
  box(g,0x285446,0,1.1,0,.6,.25,.6);const flag=box(g,colors[b.team],.1,1.7,0,.55,.3,.03);box(g,0x284c3b,-.18,1.5,0,.035,.85,.035);baseViews.push({g,flag});
 }
-for(const w of [...createMatch({version:'0.3'}).walls,...createMatch({version:'0.3',map:'lanes'}).walls]){
+for(const w of [...createMatch({version:'0.3'}).walls,...createMatch({version:'0.3',map:'lanes'}).walls,...createMatch({version:'0.3',experiment:'control'}).walls]){
  if(wallViews.has(w.id))continue;
  const g=new THREE.Group();g.position.set(w.x,0,w.z);scene.add(g);
  if(w.id.startsWith('rock'))mesh(g,rockGeo,0x999e8c,0,w.h/2,0,w.w*.62,w.h*.66,w.d*.65);
@@ -131,35 +137,37 @@ function animateBaseFX(dt){
  }
  if(endReveal>0&&animate){endReveal=Math.max(0,endReveal-dt);if(endReveal===0)updateCard();}
 }
-function clearInput(){keys.clear();pointers.clear();tapUntil.clear();released.clear();pendingFire=false;fireGesture=stickGesture=stickAim=null;stick.x=stick.z=0;aimPoint=null;$('moveKnob').style.transform='translate(-50%,-50%)';$('fireKnob').style.transform='translate(-50%,-50%)';}
-function pause(){if(match.status==='playing'){setPaused(match,true);clearInput();updateCard();}else if(match.status==='paused'&&!portrait.matches){setPaused(match,false);clearInput();updateCard();}}
-function reset(){clearInput();for(const f of flashes)scene.remove(f.mesh);flashes.length=0;notice='';noticeUntil=0;endReveal=0;for(const p of trailPuffs)p.life=0;smokeTrail.count=0;trailCursor=0;for(const v of baseViews){v.fx.age=-1;v.fx.root.visible=false;v.fx.ruins.visible=false;v.fx.light.intensity=0;}match=createMatch({version:$('version').value,bot:$('bot').checked,map:$('map').value});accumulator=0;updateCard();}
+function clearInput(){pendingOrders={};keys.clear();pointers.clear();tapUntil.clear();released.clear();pendingFire=false;fireGesture=stickGesture=stickAim=null;stick.x=stick.z=0;aimPoint=null;$('moveKnob').style.transform='translate(-50%,-50%)';$('fireKnob').style.transform='translate(-50%,-50%)';}
+function pause(){if(match.status==='playing'){setPaused(match,true);if(run){recordEvent(run,{type:'pause',paused:true},match.time);runStore.put(run);}clearInput();updateCard();}else if(match.status==='paused'&&!portrait.matches){setPaused(match,false);if(run)recordEvent(run,{type:'pause',paused:false},match.time);clearInput();updateCard();}}
+function clearFeedback(){for(const id of ['fun','clarity','controlRating','feedbackNote'])$(id).value='';}
+function reset(reason='reset'){if(typeof reason!=='string')reason='reset';finalize(reason);clearFeedback();clearInput();for(const f of flashes)scene.remove(f.mesh);flashes.length=0;notice='';noticeUntil=0;endReveal=0;for(const p of trailPuffs)p.life=0;smokeTrail.count=0;trailCursor=0;for(const v of baseViews){v.fx.age=-1;v.fx.root.visible=false;v.fx.ruins.visible=false;v.fx.light.intensity=0;}let experiment=$('experiment').value||'legacy',seed=20261006;setupError='';try{seed=parseSeed($('seed').value);}catch(e){setupError=e.message;}if(experiment!=='legacy'&&$('version').value!=='0.3')setupError='Этот вариант работает в версии 0.3. Нажми «Перейти на 0.3».';match=createMatch({version:$('version').value,bot:$('bot').checked,map:$('map').value==='lanes'?'lanes':'maze',experiment:$('version').value==='0.3'?experiment:'legacy',config:{seed}});run=null;accumulator=0;updateCard();}
 function updateCard(help=false){
- const overlay=(match.status!=='playing'&&!(match.status==='finished'&&endReveal>0))||help;$('overlay').hidden=!overlay;document.body.dataset.overlay=String(overlay);document.body.dataset.version=match.version;$('map').disabled=match.version!=='0.3';
+ const overlay=(match.status!=='playing'&&!(match.status==='finished'&&endReveal>0))||help;$('overlay').hidden=!overlay;document.body.dataset.overlay=String(overlay);document.body.dataset.version=match.version;document.body.dataset.experiment=match.experiment;$('map').disabled=match.version!=='0.3'||match.experiment!=='legacy';$('map').value=match.experiment==='legacy'?match.map:'study-lanes-v1';$('experimentInfo').textContent=match.experiment==='legacy'?'Прежняя игра с лабиринтом и находками.':match.experiment==='control'?'Два фиксированных пути, пополнение поровну, без находок.':'Та же общая основа. X / Numpad0 или кнопка меняют путь будущего пополнения. Вышедших миньонов не отзывают.';$('setupError').textContent=setupError;$('use03').hidden=!setupError.includes('0.3');$('play').disabled=!!setupError;$('results').hidden=!(run?.finishReason);$('storageStatus').textContent=runStore.error||`В журнале: ${runStore.runs.length} из 20 матчей. Хранение только на этом устройстве.`;if(run?.finishReason)$('resultText').textContent=`${PROFILES[match.experiment].label} · ${run.rulesetId} · ${run.buildId} · ${run.completed?(run.winner===null?'Ничья':`Победила команда ${run.winner+1}`):'Прерван, без поражения'} · ${run.timeSim.toFixed(1)} с. Урон базам: бирюзовый танк ${run.summary.baseDamage[0].tank}, миньоны ${run.summary.baseDamage[0].minion}; розовый танк ${run.summary.baseDamage[1].tank}, миньоны ${run.summary.baseDamage[1].minion}.`;
  $('instructions').hidden=match.status==='finished';
  $('title').textContent=match.status==='finished'?(match.winner===null?'Обе базы разрушены.':`${match.winner===0?'Бирюзовая':'Розовая'} команда победила.`):match.status==='paused'?'Бой на паузе.':'Прикрой свою базу.';
  $('message').textContent=match.status==='finished'?'Победа определяется только разрушением базы. Запусти новый бой или сравни другую версию.':match.status==='paused'?'Базы, танки, миньоны и снаряды ждут. Продолжи явно, когда будешь готов.':match.map==='maze'?'Пробирайся к базе через лабиринт. Малые танки патрулируют, выбирают повороты и постепенно наступают. Кирпичи можно разбить, открыв короткий путь.':'Два маршрута, два автоматических помощника и один танк у каждого игрока. Миньонов нельзя игнорировать: они сносят базу.';
- $('play').textContent=match.status==='finished'?'Новый бой':match.status==='paused'?'Продолжить':'Начать бой';$('pause').textContent=match.status==='paused'?'▶':'Ⅱ';
+ $('play').textContent=match.status==='finished'?'Повторить этот вариант':match.status==='paused'?'Продолжить':'Начать бой';$('pause').textContent=match.status==='paused'?'▶':'Ⅱ';
 }
-$('version').innerHTML=VERSIONS.map(v=>`<option value="${v}">${v}</option>`).join('');$('version').value=match.version;$('map').value=match.map;$('bot').checked=match.bot;
-$('version').addEventListener('change',reset);$('map').addEventListener('change',reset);$('bot').addEventListener('change',()=>{match.bot=$('bot').checked;for(const code of Object.values(maps[1])){keys.delete(code);released.delete(code);tapUntil.delete(code);}updateCard();});$('reset').addEventListener('click',reset);$('pause').addEventListener('click',pause);
+$('version').innerHTML=VERSIONS.map(v=>`<option value="${v}">${v}</option>`).join('');$('version').value=match.version;$('map').value=match.map;$('bot').checked=match.bot;$('experiment').value=requestedExperiment;$('seed').value=String(initialSeed);
+$('version').addEventListener('change',()=>reset('variant_change'));$('map').addEventListener('change',()=>reset('variant_change'));$('experiment').addEventListener('change',()=>reset('variant_change'));$('seed').addEventListener('change',()=>reset('variant_change'));$('use03').addEventListener('click',()=>{$('version').value='0.3';reset('variant_change');});$('bot').addEventListener('change',()=>{if(match.experiment!=='legacy'){reset('mode_change');return;}match.bot=$('bot').checked;for(const code of Object.values(maps[1])){keys.delete(code);released.delete(code);tapUntil.delete(code);}updateCard();});$('reset').addEventListener('click',reset);$('pause').addEventListener('click',pause);
 $('help').addEventListener('click',()=>{if(match.status==='playing')pause();else updateCard(true);});
-$('play').addEventListener('click',()=>{if(portrait.matches)return;if(match.status==='finished')reset();if(match.status==='intro')start(match);else if(match.status==='paused')setPaused(match,false);clearInput();if(!soundChosen){soundChosen=true;muted=false;$('sound').setAttribute('aria-pressed','true');$('sound').setAttribute('aria-label','Выключить звук');}beep('fire');updateCard();viewport.focus();});
+$('play').addEventListener('click',()=>{if(portrait.matches||setupError)return;if(match.status==='finished'){if(run){run.selectedReplay=match.experiment;runStore.put(run);}reset();}if(match.status==='intro'){clearFeedback();start(match);run=createRun(match,{inputType:'keyboard',screen:{width:window.innerWidth||viewport.clientWidth,height:window.innerHeight||viewport.clientHeight}});lastSavedSecond=-1;recordEvent(run,{type:'start'},match.time);for(const u of match.units)recordEvent(run,{type:'spawn',id:u.id,team:u.team,kind:u.kind},0);runStore.put(run);}else if(match.status==='paused'){setPaused(match,false);recordEvent(run,{type:'pause',paused:false},match.time);}clearInput();if(!soundChosen){soundChosen=true;muted=false;$('sound').setAttribute('aria-pressed','true');$('sound').setAttribute('aria-label','Выключить звук');}beep('fire');updateCard();viewport.focus();});
 $('sound').addEventListener('click',()=>{soundChosen=true;muted=!muted;$('sound').setAttribute('aria-pressed',String(!muted));$('sound').setAttribute('aria-label',muted?'Включить звук':'Выключить звук');beep('fire');});
 const maps=[{up:'KeyW',down:'KeyS',left:'KeyA',right:'KeyD',fire:'Space',aimLeft:'KeyQ',aimRight:'KeyE',far:'KeyR',near:'KeyF'},{up:'ArrowUp',down:'ArrowDown',left:'ArrowLeft',right:'ArrowRight',fire:'Enter',aimLeft:'Comma',aimRight:'Period',far:'ShiftRight',near:'Slash'}];
-const managed=new Set([...maps.flatMap(m=>Object.values(m)),'KeyT','Backslash','KeyG','Minus','Escape']);
+const managed=new Set([...maps.flatMap(m=>Object.values(m)),'KeyT','Backslash','KeyG','Minus','KeyX','Numpad0','Escape']);
 function toggle(team,what){const u=match.units.find(u=>u.team===team&&u.kind==='tank');if(what==='arc')u.high=!u.high;else{const options=availableWeapons(u);u.shell=options[(options.indexOf(u.shell)+1)%options.length];}}
 document.addEventListener('keydown',e=>{
  if(!managed.has(e.code)||e.target instanceof HTMLSelectElement||e.target instanceof HTMLInputElement)return;
  if(e.target instanceof HTMLButtonElement&&match.status!=='playing'&&['Space','Enter'].includes(e.code))return;
  e.preventDefault();if(e.code==='Escape'){if(!e.repeat)pause();return;}if(match.status!=='playing'||portrait.matches)return;
+ if(['KeyX','Numpad0'].includes(e.code)){if(!e.repeat)queueOrder(e.code==='KeyX'?0:1);return;}
  if(!e.repeat){if(e.code==='KeyT')toggle(0,'arc');if(e.code==='Backslash')toggle(1,'arc');if(e.code==='KeyG')toggle(0,'shell');if(e.code==='Minus')toggle(1,'shell');}
  if(e.code==='KeyQ'||e.code==='KeyE'){aimPoint=null;stickAim=null;}
  keys.add(e.code);released.delete(e.code);tapUntil.set(e.code,performance.now()+80);
 });
 document.addEventListener('keyup',e=>released.add(e.code));
 const moveStick=$('moveStick'),fireButton=$('fireButton');
-function validGesture(e){window.getSelection?.()?.removeAllRanges();return match.status==='playing'&&!portrait.matches&&e.button===0;}
+function validGesture(e){if(run)run.inputType=e.pointerType==='touch'?'touch':e.pointerType==='mouse'?'keyboard+mouse':run.inputType;window.getSelection?.()?.removeAllRanges();return match.status==='playing'&&!portrait.matches&&e.button===0;}
 function moveJoystick(e){
  if(!stickGesture||stickGesture.id!==e.pointerId)return;
  const dx=e.clientX-stickGesture.x,dy=e.clientY-stickGesture.y,d=Math.hypot(dx,dy),radius=38;
@@ -181,7 +189,7 @@ fireButton.addEventListener('pointerdown',e=>{e.preventDefault();if(!validGestur
 fireButton.addEventListener('pointermove',e=>{e.preventDefault();aimJoystick(e);});
 fireButton.addEventListener('pointerup',e=>{e.preventDefault();if(fireGesture?.id!==e.pointerId)return;aimJoystick(e);fireGesture=null;$('fireKnob').style.transform='translate(-50%,-50%)';if(match.status==='playing'&&!portrait.matches)pendingFire=true;});
 for(const event of ['pointercancel','lostpointercapture'])fireButton.addEventListener(event,e=>{e.preventDefault();if(fireGesture?.id===e.pointerId){fireGesture=null;$('fireKnob').style.transform='translate(-50%,-50%)';}});
-for(const event of ['selectstart','contextmenu','dragstart'])document.addEventListener(event,e=>{if(e.target.closest?.('main,#rotate'))e.preventDefault();});
+for(const event of ['selectstart','contextmenu','dragstart'])document.addEventListener(event,e=>{if(e.target.closest?.('main,#rotate')&&!e.target.closest?.('textarea,input'))e.preventDefault();});
 $('arc').addEventListener('click',()=>{if(match.status==='playing')toggle(0,'arc');});
 $('shell').addEventListener('click',()=>{if(match.status!=='playing')return;const u=match.units[0];u.shell=u.shell==='direct'&&u.ammo.rapid>0?'rapid':'direct';fireGesture=null;pendingFire=false;$('fireKnob').style.transform='translate(-50%,-50%)';});
 $('rocketSelect').addEventListener('click',()=>{if(match.status!=='playing')return;const u=match.units[0];u.shell=u.shell==='arc'&&u.ammo.rocket>0?'rocket':'arc';fireGesture=null;pendingFire=false;$('fireKnob').style.transform='translate(-50%,-50%)';});
@@ -198,7 +206,7 @@ function inputs(){for(const code of released)if(performance.now()>=(tapUntil.get
  const c={x:Number(active('right'))-Number(active('left'))+(team===0?stick.x:0),z:Number(active('down'))-Number(active('up'))+(team===0?stick.z:0),fire:active('fire')||(team===0&&pendingFire),turn:Number(active('aimRight'))-Number(active('aimLeft')),rangeDelta:Number(active('far'))-Number(active('near'))};
  if(team===0&&stickAim&&!c.turn)Object.assign(c,stickAim);
  else if(team===0&&aimPoint&&!c.turn){c.aim=Math.atan2(aimPoint.x-u.x,aimPoint.z-u.z);c.range=Math.hypot(aimPoint.x-u.x,aimPoint.z-u.z);}return [team,c];
-}));pendingFire=false;return result;}
+}));for(const team of [0,1])if(pendingOrders[team])result[team].order=pendingOrders[team];pendingOrders={};pendingFire=false;return result;}
 function resize(){const w=viewport.clientWidth,h=viewport.clientHeight;renderer.setSize(w,h);const aspect=w/h,v=Math.max(7.5,11.5/aspect);camera.left=-v*aspect;camera.right=v*aspect;camera.top=v;camera.bottom=-v;camera.updateProjectionMatrix();}new ResizeObserver(resize).observe(viewport);
 function visual(dt,events=[]){
  const floorStamp=match.map+':'+match.navRevision;
@@ -206,7 +214,7 @@ function visual(dt,events=[]){
   floorKey=floorStamp;
   for(let row=0,n=0;row<11;row++)for(let col=0;col<19;col++,n++){
    const x=col-9,z=row-5,covered=match.walls.some(w=>w.hp>0&&Math.abs(x-w.x)<w.w/2&&Math.abs(z-w.z)<w.d/2);
-   const road=match.map==='maze'?!covered&&Math.abs(x)<8:Math.abs(Math.abs(z)-3.5)<1;
+   const road=match.experiment!=='legacy'?Math.abs(Math.abs(z)-3)<1||Math.abs(x)>=6:match.map==='maze'?!covered&&Math.abs(x)<8:Math.abs(Math.abs(z)-3.5)<1;
    tiles.setColorAt(n,new THREE.Color(road?[0xb1b47c,0xb8b882][n%2]:[0x739844,0x7b9e47,0x81a64b][n%3]));
   }tiles.instanceColor.needsUpdate=true;
  }
@@ -236,7 +244,7 @@ function visual(dt,events=[]){
   if(v.userData.flame){const pose=s.ballistic?projectilePose(s):{vx:s.vx,vy:0,vz:s.vz};rocketDirection.set(pose.vx,pose.vy,pose.vz).normalize();v.quaternion.setFromUnitVectors(rocketAxis,rocketDirection);v.userData.flame.scale.z=2.4+Math.sin(match.time*43)*.6;
    if(match.status==='playing'&&!portrait.matches&&!document.hidden&&dt>0){v.userData.trailClock+=dt;while(v.userData.trailClock>=.045){v.userData.trailClock-=.045;const age=s.ballistic?Math.max(0,s.age-v.userData.trailClock):0,p=s.ballistic?projectilePose(s,age):{x:s.x-s.vx*v.userData.trailClock,y:s.y,z:s.z-s.vz*v.userData.trailClock};const puff=trailPuffs[trailCursor++%trailPuffs.length];Object.assign(puff,{life:.7,x:p.x-rocketDirection.x*.3,y:p.y-rocketDirection.y*.3,z:p.z-rocketDirection.z*.3});}}
   }
-  if(s.ballistic){let mark=marks.get(s.id);if(!mark){mark=new THREE.Mesh(ringGeo,mat(colors[s.team]));mark.rotation.x=-Math.PI/2;mark.scale.setScalar(.8);scene.add(mark);marks.set(s.id,mark);}mark.position.set(s.tx,.04,s.tz);}
+  if(s.ballistic){let mark=marks.get(s.id);if(!mark){mark=new THREE.Mesh(ringGeo,mat(colors[s.team]));mark.rotation.x=-Math.PI/2;mark.scale.setScalar(.8);scene.add(mark);marks.set(s.id,mark);}mark.position.set(s.tx,.04,s.tz);mark.visible=match.experiment==='legacy'||!!warningFor(s);mark.scale.setScalar(s.splash); }
  }
  for(const e of events){if(e.type==='baseDestroyed'){const f=baseViews[e.team].fx;if(f.age<0){f.age=0;f.root.visible=true;f.ruins.visible=true;endReveal=2.6;beep('baseDestroyed');updateCard();}}if(e.type==='collect'&&e.id==='0-0'){notice={rocket:'Найдено: 3 ракеты',rapid:'Найдено: 12 скорострельных',repair:'Ремонт +2♥'}[e.loot];noticeUntil=match.time+4;}if(['fire','hit','impact','death','destroy','collect'].includes(e.type)){const fx=new THREE.Mesh(rockGeo,fxMat);fx.position.set(e.x,.2,e.z);fx.scale.setScalar(e.type==='fire'?.18:.32);scene.add(fx);flashes.push({mesh:fx,life:.2});beep(e.type==='fire'&&e.weapon==='arc'?'launch':e.type);if(e.type==='impact'&&e.r){fx.scale.setScalar(.4);flashes.at(-1).life=.35;const wave=new THREE.Mesh(ringGeo,fxMat);wave.rotation.x=-Math.PI/2;wave.position.set(e.x,.04,e.z);wave.scale.setScalar(.25);scene.add(wave);flashes.push({mesh:wave,life:.35});}}}
  if(match.status==='playing'||match.status==='finished')for(let i=flashes.length-1;i>=0;i--){const f=flashes[i];f.life-=dt;f.mesh.scale.multiplyScalar(1+dt*4);if(f.life<=0){scene.remove(f.mesh);flashes.splice(i,1);}}
@@ -251,7 +259,7 @@ function visual(dt,events=[]){
  const describe=(team)=>{const u=tanks[team],mins=match.units.filter(v=>v.team===team&&v.kind==='minion'&&v.hp>0).length;return `БАЗА ${match.bases[team].hp}/${match.cfg.baseHP} · ТАНК ${u.hp>0?u.hp+'♥':Math.max(0,u.respawn).toFixed(1)+'с'} · МИНЬОНЫ ${mins}/${match.cfg.minions}`;};
  $('blueScore').textContent=describe(0);$('pinkScore').textContent=describe(1);
  $('status').textContent=match.status==='playing'?`v${match.version} · ${Math.floor(match.time)}с`:match.status==='finished'?'БАЗА РАЗРУШЕНА':'ЛОКАЛЬНЫЙ БОЙ';
- $('rules').textContent=`v${match.version} · ${match.map==='maze'?'Лабиринт':'Полосы'} · ${match.bot?'Бирюзовый vs AI':'Два человека / одна клавиатура'}`;
+ $('rules').textContent=`v${match.version} · ${match.experiment!=='legacy'?PROFILES[match.experiment].label+' · Два пути':match.map==='maze'?'Лабиринт':'Полосы'} · ${match.bot?'Бирюзовый vs AI':'Два человека / одна клавиатура'}`;
  $('arc').textContent=tanks[0].high?'ВЫСОКАЯ':'НИЗКАЯ';
  const weaponName=u=>({arc:'РАКЕТНАЯ ДУГА',direct:'ПРЯМОЙ',rocket:`ПРЯМАЯ РАКЕТА ×${u.ammo.rocket}`,rapid:`СКОРОСТР. ×${u.ammo.rapid}`}[u.shell]);
  $('shell').textContent=tanks[0].shell==='rapid'?'СКОРОСТР.':'СНАРЯД';$('shell').setAttribute('aria-pressed',String(['direct','rapid'].includes(tanks[0].shell)));$('rocketSelect').setAttribute('aria-pressed',String(['arc','rocket'].includes(tanks[0].shell)));$('rocketSelect').textContent=tanks[0].shell==='rocket'?`РАКЕТА ×${tanks[0].ammo.rocket}`:'РАКЕТА';$('fireLabel').textContent=fireGesture?'ОТПУСТИ':tanks[0].cooldown>0?tanks[0].cooldown.toFixed(1)+'с':'ОГОНЬ';$('arc').disabled=tanks[0].shell!=='arc';
@@ -260,18 +268,27 @@ function visual(dt,events=[]){
  if(match.bot&&match.status==='playing')$('status').textContent+=` · AI: ${tanks[1].intent==='defend'?'ЗАЩИТА':'АТАКА'}`;
  if(notice&&match.time<noticeUntil)$('status').textContent+=` · ${notice}`;
  $('hint').textContent=match.version==='0.1'?'WASD / Пробел · Стрелки / Enter · Esc — пауза':`Q/E · ,/. башни | v${match.version}${match.version==='0.3'?' · R/F и / Shift дальность · T/\\ дуга · G/− снаряд':''} · касание поля: прицел`;
+ updateStudyHUD(tanks);
  $('stats').textContent=`${renderer.info.render.calls} calls · ${renderer.info.render.triangles} triangles`;
- viewport.dataset.snapshot=JSON.stringify({version:match.version,map:match.map,status:match.status,time:match.time,winner:match.winner,bases:match.bases.map(b=>b.hp),units:match.units.map(u=>({id:u.id,x:u.x,z:u.z,hp:u.hp,respawn:u.respawn,vx:u.vx,vz:u.vz,turret:u.turret,range:u.range,high:u.high,shell:u.shell,ammo:u.ammo,intent:u.intent,turns:u.turns})),pickups:match.pickups,walls:match.walls.filter(w=>Number.isFinite(w.hp)).map(w=>({id:w.id,hp:w.hp})),shots:match.shots.map(s=>({x:s.x,z:s.z,y:s.y,ballistic:s.ballistic,owner:s.owner,weapon:s.weapon,remainingRange:s.remainingRange})),trailPuffs:smokeTrail.count,baseFX:baseViews.map(v=>v.fx.age),geometries:renderer.info.memory.geometries});
+ viewport.dataset.snapshot=JSON.stringify({version:match.version,experiment:match.experiment,teamOrders:match.teamOrders,map:match.map,status:match.status,time:match.time,winner:match.winner,bases:match.bases.map(b=>b.hp),units:match.units.map(u=>({id:u.id,x:u.x,z:u.z,hp:u.hp,respawn:u.respawn,vx:u.vx,vz:u.vz,turret:u.turret,range:u.range,high:u.high,shell:u.shell,ammo:u.ammo,intent:u.intent,turns:u.turns,lane:u.assignedLane,stage:u.stage})),pickups:match.pickups,walls:match.walls.filter(w=>Number.isFinite(w.hp)).map(w=>({id:w.id,hp:w.hp})),shots:match.shots.map(s=>({x:s.x,z:s.z,y:s.y,ballistic:s.ballistic,owner:s.owner,weapon:s.weapon,remainingRange:s.remainingRange})),trailPuffs:smokeTrail.count,baseFX:baseViews.map(v=>v.fx.age),geometries:renderer.info.memory.geometries});
 }
+function finalize(reason){if(run&&!run.finishReason){finishRun(run,match,reason);runStore.put(run);}}
+function queueOrder(team){if(match.experiment!=='orders'||match.status!=='playing'||(match.bot&&team===1))return;const choices=['split','up','down'],current=pendingOrders[team]||match.teamOrders[team];pendingOrders[team]=choices[(choices.indexOf(current)+1)%3];if(fireGesture){fireGesture=null;$('fireKnob').style.transform='translate(-50%,-50%)';} }
+$('order0').addEventListener('pointerdown',()=>queueOrder(0));$('order1').addEventListener('pointerdown',()=>queueOrder(1));
+function updateStudyHUD(tanks){const study=match.experiment!=='legacy',names={split:'поровну',up:'верх',down:'низ'};$('ordersPanel').hidden=match.experiment!=='orders'||match.status!=='playing';$('order1').hidden=match.bot;$('orderStatus1').hidden=false;if(study){for(const team of [0,1])$('order'+team).textContent=`Маршрут: ${names[match.teamOrders[team]]}`;$('orderStatus1').textContent=`${match.bot?'AI':'Розовый'}: ${names[match.teamOrders[1]]}`;} $('studyStatus').hidden=!study||match.status!=='playing';if(study)$('studyStatus').textContent=[0,1].map(team=>{const mins=match.units.filter(u=>u.team===team&&u.kind==='minion');const paths=mins.map(u=>u.hp>0?(u.assignedLane==='up'?'↑':u.assignedLane==='down'?'↓':'↔'):`${Math.max(0,u.respawn).toFixed(1)}с`).join(' ');const threatened=match.units.some(u=>u.team!==team&&u.hp>0&&u.x*(team===0?1:-1)<0);return `${team===0?'Бирюз.':'Роз.'}: ${paths}${threatened?' · БАЗА ПОД УГРОЗОЙ':''}`;}).join(' | ');}
+$('compare').addEventListener('click',()=>{if(run){run.selectedReplay='control';runStore.put(run);}$('experiment').value='control';reset('variant_change');});
+for(const id of ['fun','clarity','controlRating','feedbackNote'])$(id).addEventListener('change',()=>{if(!run)return;const rating=id=>{const n=Number($(id).value);return n>=1&&n<=7&&Number.isInteger(n)?n:null;};run.feedback={fun:rating('fun'),clarity:rating('clarity'),control:rating('controlRating'),note:$('feedbackNote').value.slice(0,500)};runStore.put(run);});
+$('exportRuns').addEventListener('click',()=>{if(run)runStore.put(run);$('exportPreview').hidden=false;$('exportPreview').value=runStore.export();const blob=new Blob([runStore.export()],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='tanchiki-results.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);});$('clearRuns').addEventListener('click',()=>{runStore.clear();updateCard();});
+window.addEventListener('pagehide',()=>{if(run)runStore.put(run);});
 updateCard();resize();visual(0);
-Object.defineProperty(window,'hybrid',{get:()=>({version:match.version,map:match.map,status:match.status,time:match.time,winner:match.winner,bot:match.bot,bases:match.bases.map(b=>({team:b.team,hp:b.hp})),units:match.units.map(u=>({id:u.id,x:u.x,z:u.z,hp:u.hp,respawn:u.respawn,vx:u.vx,vz:u.vz,yaw:u.yaw,turret:u.turret,range:u.range,high:u.high,shell:u.shell,ammo:u.ammo,intent:u.intent,turns:u.turns})),pickups:match.pickups,walls:match.walls.filter(w=>Number.isFinite(w.hp)).map(w=>({id:w.id,hp:w.hp})),shots:match.shots.map(s=>({x:s.x,z:s.z,y:s.y,ballistic:s.ballistic,owner:s.owner,weapon:s.weapon,remainingRange:s.remainingRange})),trailPuffs:smokeTrail.count,baseFX:baseViews.map(v=>v.fx.age),geometries:renderer.info.memory.geometries,calls:renderer.info.render.calls,triangles:renderer.info.render.triangles})});
+Object.defineProperty(window,'hybrid',{get:()=>({version:match.version,map:match.map,status:match.status,time:match.time,winner:match.winner,bot:match.bot,bases:match.bases.map(b=>({team:b.team,hp:b.hp})),units:match.units.map(u=>({id:u.id,x:u.x,z:u.z,hp:u.hp,respawn:u.respawn,vx:u.vx,vz:u.vz,yaw:u.yaw,turret:u.turret,range:u.range,high:u.high,shell:u.shell,ammo:u.ammo,intent:u.intent,turns:u.turns,lane:u.assignedLane,stage:u.stage})),pickups:match.pickups,walls:match.walls.filter(w=>Number.isFinite(w.hp)).map(w=>({id:w.id,hp:w.hp})),shots:match.shots.map(s=>({x:s.x,z:s.z,y:s.y,ballistic:s.ballistic,owner:s.owner,weapon:s.weapon,remainingRange:s.remainingRange})),trailPuffs:smokeTrail.count,baseFX:baseViews.map(v=>v.fx.age),geometries:renderer.info.memory.geometries,calls:renderer.info.render.calls,triangles:renderer.info.render.triangles})});
 function frame(now){
  const dt=Math.min((now-last)/1000,.1);last=now;let events=[];
  if(portrait.matches&&match.status==='playing')pause();
  if(match.status==='playing'){
   accumulator+=dt;
-  while(accumulator>=1/60&&match.status==='playing'){step(match,1/60,inputs());events.push(...match.events);accumulator-=1/60;}
-  if(match.status==='finished'){clearInput();updateCard();}
+  while(accumulator>=1/60&&match.status==='playing'){step(match,1/60,inputs());recordStep(run,match);events.push(...match.events);accumulator-=1/60;}
+  if(match.status==='finished'){finalize(match.winner===null?'draw':'base_destroyed');clearInput();updateCard();}else if(run&&Math.floor(match.time)!==lastSavedSecond){lastSavedSecond=Math.floor(match.time);runStore.put(run);}
  }else accumulator=0;
  visual(dt,events);renderer.render(scene,camera);requestAnimationFrame(frame);
 }requestAnimationFrame(frame);

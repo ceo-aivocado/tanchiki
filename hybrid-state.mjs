@@ -1,21 +1,26 @@
+import {PROFILES,STUDY,studyWalls,routePoints} from './hybrid-experiments.mjs?v=20261007-t034-3';
 // Pure, deterministic local simulation. No DOM/Three/network authority claimed.
 export const CONFIG=Object.freeze({width:20,height:12,seed:20261006,baseHP:30,tankHP:5,minionHP:2,minions:2,tankRespawn:4,minionRespawn:6.5,speed:3.2,minionSpeed:1.25,shotDelay:.65,tankShotDelay:.95,tankArcDelay:3.6,tankDamage:2,tankArcDamage:3,minionShotDelay:1.2,damage:1,acceleration:10,drag:2.6,recoil:.7,hitImpulse:2.5,gravity:9,highFlight:2.4,lowFlight:1.2,arcShotDelay:2.8,maxArcShots:1,directRange:3.2,rocketRange:6,splashRadius:1,inheritVelocity:.15});
 export const VERSIONS=['0.1','0.2','0.3'];
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export const angle=(x,z)=>Math.atan2(x,z);
-export function createMatch({version='0.1',bot=false,map='maze',config={}}={}){
+export function createMatch({version='0.1',bot=false,map='maze',experiment='legacy',config={}}={}){
  if(!VERSIONS.includes(version))throw new Error('Unknown rules version');
+ if(!PROFILES[experiment])throw Error('Unknown experiment');
+ if(experiment!=='legacy'&&version!=='0.3')throw Error('Для эксперимента нужна версия 0.3.');
  const cfg={...CONFIG,...config};
  const bases=[0,1].map(team=>({team,x:team===0?-8.9:8.9,z:0,r:.85,h:1.2,hp:cfg.baseHP,maxHP:cfg.baseHP}));
  const units=[];
  for(let team=0;team<2;team++)for(let i=0;i<=cfg.minions;i++){
   const kind=i===0?'tank':'minion',dir=team===0?1:-1;
-  const sx=dir*-7.3,sz=i===0?0:(i%2===1?-1:1)*((i%2===1)===(team===0)?3.15:3.95);
+  const sx=dir*-7.3,sz=experiment!=='legacy'?0:i===0?0:(i%2===1?-1:1)*((i%2===1)===(team===0)?3.15:3.95);
   units.push({id:`${team}-${i}`,team,kind,lane:sz,sx,sz,x:sx,z:sz,vx:0,vz:0,yaw:angle(dir,0),turret:angle(dir,0),r:kind==='tank'?.36:.24,h:kind==='tank'?.65:.43,maxHP:kind==='tank'?cfg.tankHP:cfg.minionHP,hp:kind==='tank'?cfg.tankHP:cfg.minionHP,cooldown:0,respawn:0,range:4.8,high:true,shell:'arc',ammo:{rocket:0,rapid:0},shield:1,rng:(cfg.seed+team*1009+i*137)>>>0,patrol:null,visits:{},turns:0,stuck:0});
  }
- const walls=version==='0.3'&&map==='maze'?createMaze():[{id:'low-0',x:0,z:0,w:1.25,d:2.6,h:.65,hp:6,loot:'rocket'},{id:'low-1',x:-3,z:1.5,w:1.7,d:.65,h:.65,hp:4,loot:'rapid'},{id:'low-2',x:3,z:-1.5,w:1.7,d:.65,h:.65,hp:4,loot:'repair'},{id:'rock-0',x:-3,z:-1.3,w:1,d:.9,h:1.6,hp:Infinity},{id:'rock-1',x:3,z:1.3,w:1,d:.9,h:1.6,hp:Infinity}];
- walls.push({id:'shed-0',x:-5,z:4.8,w:1.2,d:.9,h:1.1,hp:version==='0.3'?3:0,loot:'rocket'},{id:'shed-1',x:5,z:-4.8,w:1.2,d:.9,h:1.1,hp:version==='0.3'?3:0,loot:'rapid'});
- return {version,map:version==='0.3'?map:'lanes',bot,cfg,bases,units,walls,pickups:[],shots:[],events:[],status:'intro',winner:null,time:0,nextShot:0,navRevision:0,navCache:null};
+ const walls=experiment!=='legacy'?studyWalls():version==='0.3'&&map==='maze'?createMaze():[{id:'low-0',x:0,z:0,w:1.25,d:2.6,h:.65,hp:6,loot:'rocket'},{id:'low-1',x:-3,z:1.5,w:1.7,d:.65,h:.65,hp:4,loot:'rapid'},{id:'low-2',x:3,z:-1.5,w:1.7,d:.65,h:.65,hp:4,loot:'repair'},{id:'rock-0',x:-3,z:-1.3,w:1,d:.9,h:1.6,hp:Infinity},{id:'rock-1',x:3,z:1.3,w:1,d:.9,h:1.6,hp:Infinity}];
+ if(experiment==='legacy')walls.push({id:'shed-0',x:-5,z:4.8,w:1.2,d:.9,h:1.1,hp:version==='0.3'?3:0,loot:'rocket'},{id:'shed-1',x:5,z:-4.8,w:1.2,d:.9,h:1.1,hp:version==='0.3'?3:0,loot:'rapid'});
+ const result={version,experiment,map:experiment!=='legacy'?STUDY.mapId:version==='0.3'?map:'lanes',bot,cfg,bases,units,walls,pickups:[],shots:[],events:[],status:'intro',winner:null,time:0,nextShot:0,navRevision:0,navCache:null};
+ if(experiment!=='legacy'){result.teamOrders=['split','split'];result.splitNext=[0,0];result.units.filter(u=>u.kind==='minion').forEach(u=>{const i=Number(u.id.split('-')[1]);u.x=u.sx;u.z=u.sz=(i===1?-.8:.8);u.stage=0;u.assignedLane=null;});}
+ return result;
 }
 function createMaze(){
  // Original layout: staggered gates, junctions and side pockets, rather than two straight lanes.
@@ -141,11 +146,12 @@ function collideUnits(m){
   }
  }
 }
-function damage(m,target,amount){
- if(target.hp<=0||target.shield>0)return;target.hp=Math.max(0,target.hp-amount);
- m.events.push({type:'hit',x:target.x,z:target.z,team:target.team});
+function damage(m,target,amount,s){
+ if(target.hp<=0||target.shield>0)return;const applied=Math.min(target.hp,amount);target.hp=Math.max(0,target.hp-amount);
+ m.events.push({type:'hit',x:target.x,z:target.z,team:target.team,...({attacker:{id:s.owner,team:s.team,kind:m.units.find(u=>u.id===s.owner).kind},target:target.id||`base-${target.team}`,weapon:s.weapon,rawDamage:amount,appliedDamage:applied})});
+ if(!target.kind)m.events.push({type:'baseDamage',attacker:{id:s.owner,team:s.team,kind:m.units.find(u=>u.id===s.owner).kind},target:`base-${target.team}`,weapon:s.weapon,rawDamage:amount,appliedDamage:applied});
  if(!target.kind&&target.hp===0)m.events.push({type:'baseDestroyed',team:target.team,x:target.x,z:target.z});
- if(target.kind&&target.hp===0){target.respawn=target.kind==='tank'?m.cfg.tankRespawn:m.cfg.minionRespawn;target.vx=target.vz=0;m.events.push({type:'death',id:target.id,x:target.x,z:target.z});}
+ if(target.kind&&target.hp===0){target.respawn=target.kind==='tank'?m.cfg.tankRespawn:m.cfg.minionRespawn;target.vx=target.vz=0;m.events.push({type:'death',id:target.id,x:target.x,z:target.z,...(m.experiment!=='legacy'?{team:target.team,kind:target.kind,lane:target.assignedLane}: {})});}
 }
 function damageWall(m,w,amount){
  if(w.hp<=0||!Number.isFinite(w.hp))return;
@@ -153,7 +159,7 @@ function damageWall(m,w,amount){
  if(w.hp===0){
   m.navRevision++;
   m.events.push({type:'destroy',x:w.x,z:w.z,id:w.id});
-  if(m.version==='0.3'&&w.loot){m.pickups.push({id:w.id,x:w.x,z:w.z,type:w.loot});m.events.push({type:'drop',x:w.x,z:w.z,loot:w.loot});}
+  if(m.experiment==='legacy'&&m.version==='0.3'&&w.loot){m.pickups.push({id:w.id,x:w.x,z:w.z,type:w.loot});m.events.push({type:'drop',x:w.x,z:w.z,loot:w.loot});}
  }
 }
 export function availableWeapons(u){return ['arc','direct',...['rocket','rapid'].filter(w=>u.ammo[w]>0)];}
@@ -181,9 +187,10 @@ export function fire(m,u){
  m.shots.push(shot);u.cooldown=weapon==='arc'?(u.kind==='tank'?m.cfg.tankArcDelay:m.cfg.arcShotDelay):u.kind==='tank'?(weapon==='rapid'?.22:m.version==='0.3'?m.cfg.tankShotDelay:m.cfg.shotDelay):m.cfg.minionShotDelay;
  if(weapon==='rocket'||weapon==='rapid'){u.ammo[weapon]--;if(u.ammo[weapon]===0)u.shell='direct';}
  if(m.version!=='0.1'){u.vx-=dx*m.cfg.recoil;u.vz-=dz*m.cfg.recoil;}
- m.events.push({type:'fire',id:u.id,x:shot.x,z:shot.z,weapon});return shot;
+ m.events.push({type:'fire',id:u.id,x:shot.x,z:shot.z,weapon,...({team:u.team,kind:u.kind,shotId:shot.id,aim:u.turret,target:{x:shot.tx??shot.x+dx*shot.remainingRange,z:shot.tz??shot.z+dz*shot.remainingRange},rawDamage:shot.damage})});return shot;
 }
 function ai(m,u){
+ if(m.experiment!=='legacy')return studyAI(m,u);
  if(m.version==='0.3'&&m.map==='maze')return mazeAI(m,u);
  const base=m.bases[1-u.team],dir=u.team===0?1:-1;
  const human=m.units.find(o=>o.team!==u.team&&o.kind==='tank'&&o.hp>0);
@@ -242,7 +249,7 @@ function explode(m,s){
   const dx=u.x-s.x,dz=u.z-s.z,d=Math.hypot(dx,dz);
   if(u.hp>0&&d<u.r+s.splash&&s.y<u.h+.25){
    if(u.kind){const strength=m.cfg.hitImpulse*Math.max(.25,1-d/(u.r+s.splash)),nx=d>.001?dx/d:Math.sin(s.turret||0),nz=d>.001?dz/d:1;u.vx+=nx*strength;u.vz+=nz*strength;}
-   damage(m,u,s.damage);
+   damage(m,u,s.damage,s);
   }
  }
  for(const w of m.walls)if(w.hp>0&&Math.hypot(Math.max(0,Math.abs(s.x-w.x)-w.w/2),Math.max(0,Math.abs(s.z-w.z)-w.d/2))<s.splash&&s.y<w.h+.25)damageWall(m,w,s.damage);
@@ -251,11 +258,12 @@ export function step(m,dt,inputs={}){
  if(m.status!=='playing')return;
  if(!Number.isFinite(dt)||dt<=0||dt>1/30+.000001)throw new Error('Use fixed steps <= 1/30');
  m.events=[];m.time+=dt;
+ if(m.experiment==='orders')for(const team of [0,1]){const order=inputs[team]?.order;if((!m.bot||team===0)&&['split','up','down'].includes(order)&&order!==m.teamOrders[team]){m.teamOrders[team]=order;m.events.push({type:'order',team,order});}}
  for(const u of m.units){
   if(u.hp<=0){
    u.respawn-=dt;
    if(u.respawn<=0&&!blocked(m,u,u.sx,u.sz)&&!m.units.some(o=>o!==u&&o.hp>0&&Math.hypot(o.x-u.sx,o.z-u.sz)<o.r+u.r)){
-    u.x=u.sx;u.z=u.sz;u.hp=u.maxHP;u.ammo={rocket:0,rapid:0};u.shell='arc';u.cooldown=.3;u.shield=.8;u.vx=u.vz=0;u.patrol=null;u.route=null;u.stuck=0;u.bestDistance=undefined;u.detours=0;m.events.push({type:'respawn',id:u.id,x:u.x,z:u.z});
+    u.x=u.sx;u.z=u.sz;u.hp=u.maxHP;u.ammo={rocket:0,rapid:0};u.shell='arc';u.cooldown=.3;u.shield=.8;u.vx=u.vz=0;u.patrol=null;u.route=null;u.stuck=0;u.bestDistance=undefined;u.detours=0;if(m.experiment!=='legacy'){u.stage=0;u.assignedLane=null;}m.events.push({type:'respawn',id:u.id,x:u.x,z:u.z,...(m.experiment!=='legacy'?{team:u.team,kind:u.kind}: {})});
    }
    continue;
   }
@@ -292,7 +300,7 @@ export function step(m,dt,inputs={}){
    if(target){
     if(s.ballistic||s.weapon==='rocket'){explode(m,s);return false;}
     if(m.version!=='0.1'&&target.kind){const speed=Math.hypot(s.vx,s.vz);target.vx+=s.vx/speed*m.cfg.hitImpulse;target.vz+=s.vz/speed*m.cfg.hitImpulse;}
-    damage(m,target,s.damage);return false;
+    damage(m,target,s.damage,s);return false;
    }
    if(!s.ballistic&&s.remainingRange<=1e-9)return false;
    if(s.ballistic&&s.age>=s.flight-1e-9){s.y=0;explode(m,s);return false;}
@@ -300,4 +308,25 @@ export function step(m,dt,inputs={}){
   return true;
  });
  if(m.bases.some(b=>b.hp===0)){m.status='finished';const alive=m.bases.filter(b=>b.hp>0);m.winner=alive.length===1?alive[0].team:null;m.events.push({type:'victory',team:m.winner});}
+}
+
+function studyAI(m,u){
+ const dir=u.team===0?1:-1,base=m.bases[1-u.team];let target=base,motion;
+ if(u.kind==='minion'){
+  u.shell='direct';u.intent='route';
+  let points=routePoints(u.team,u.assignedLane||'up');if(!u.assignedLane)points[0]={...points[0],z:u.sz};
+  if(!u.assignedLane&&Math.hypot(u.x-points[0].x,u.z-points[0].z)<.3){
+   const order=m.teamOrders[u.team];u.assignedLane=order==='split'?(m.splitNext[u.team]++%2===0?'up':'down'):order;u.lane=u.assignedLane;u.stage=1;m.events.push({type:'line',team:u.team,id:u.id,lane:u.assignedLane});points=routePoints(u.team,u.assignedLane);
+  }
+  const point=points[u.stage];if(u.stage<3&&Math.hypot(u.x-point.x,u.z-point.z)<.25)u.stage++;
+  const goal=points[u.stage];motion=clearSegment(m,u,u,goal)?steering(u,goal):route(m,u,goal);
+  const close=m.units.filter(o=>o.team!==u.team&&o.hp>0&&Math.abs(o.z-u.z)<1.5&&Math.hypot(o.x-u.x,o.z-u.z)<2.5&&lineOfFire(m,u,o)).sort((a,b)=>Math.hypot(a.x-u.x,a.z-u.z)-Math.hypot(b.x-u.x,b.z-u.z))[0];
+  if(Math.hypot(base.x-u.x,base.z-u.z)>3&&close)target=close;
+ }else{
+  const threats=m.units.filter(o=>o.team!==u.team&&o.hp>0&&o.x*dir<STUDY.threatX).sort((a,b)=>Math.hypot(a.x-m.bases[u.team].x,a.z)-Math.hypot(b.x-m.bases[u.team].x,b.z));
+  target=threats[0]||base;u.intent=threats.length?'defend':'attack';u.shell=threats.length?'direct':'arc';
+  const lane=target===base?-3:target.z,goal=target===base?{x:dir*6.4,z:lane}:{x:target.x-dir*1.8,z:lane};motion=clearSegment(m,u,u,goal)?steering(u,goal):route(m,u,goal);
+ }
+ const d=Math.hypot(target.x-u.x,target.z-u.z),clear=lineOfFire(m,u,target);if(clear&&d<(target===base?(u.kind==='tank'?5:3):2.3))motion={x:0,z:0};
+ return {...motion,aim:angle(target.x-u.x,target.z-u.z),range:clamp(d,2,8),fire:clear&&d<(u.shell==='arc'?6.5:m.cfg.directRange+u.r+target.r)};
 }
