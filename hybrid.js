@@ -1,7 +1,7 @@
 import * as THREE from './vendor/three.module.js';
-import {createMatch,start,setPaused,step,trajectory,projectilePose,VERSIONS,availableWeapons} from './hybrid-state.mjs?v=20261008-t039-1';
-import {BUILD_ID,PROFILES,ARMOR,MAPS,mapRoad,supplyForecast,parseSeed,warningFor} from './hybrid-experiments.mjs?v=20261008-t039-1';
-import {createRun,recordStep,recordEvent,finishRun,createStore} from './hybrid-session.mjs?v=20261008-t039-1';
+import {createMatch,start,setPaused,step,trajectory,projectilePose,VERSIONS,availableWeapons} from './hybrid-state.mjs?v=20261008-t040-1';
+import {BUILD_ID,DEFENSE,PROFILES,ARMOR,MAPS,mapRoad,supplyForecast,parseSeed,warningFor} from './hybrid-experiments.mjs?v=20261008-t040-1';
+import {createRun,recordStep,recordEvent,finishRun,createStore} from './hybrid-session.mjs?v=20261008-t040-1';
 const $=id=>document.getElementById(id),viewport=$('viewport');
 const params=new URLSearchParams(location.search);
 let requestedExperiment=PROFILES[params.get('experiment')]?params.get('experiment'):'legacy',setupError='',initialSeed=20261006;try{initialSeed=parseSeed(params.get('seed'));}catch(e){setupError=e.message;}
@@ -72,6 +72,18 @@ for(const b of match.bases){
  for(let j=0;j<4;j++)box(g,0xf0dbb0,(j%2-.5)*1.02,1.1,(Math.floor(j/2)-.5)*1.02,.28,.36,.28);
  box(g,0x285446,0,1.1,0,.6,.25,.6);const flag=box(g,colors[b.team],.1,1.7,0,.55,.3,.03);box(g,0x284c3b,-.18,1.5,0,.035,.85,.035);baseViews.push({g,flag});
 }
+const outpostViews=new Map();
+for(const t of createMatch({version:'0.3',experiment:'combined'}).outposts){
+ const root=new THREE.Group(),turret=new THREE.Group();scene.add(root);root.add(turret);
+ mesh(root,hullGeo,0x7b8570,0,.25,0,.98,.5,.98);box(root,0x3c554b,0,.53,0,.73,.11,.73);
+ for(const side of [-1,1])box(root,colors[t.team],side*.39,.35,0,.08,.22,.6);
+ mesh(turret,hullGeo,colors[t.team],0,.73,0,.6,.32,.55);box(turret,0x1d3f3a,0,.74,.47,.12,.12,.52);
+ const hp=box(root,colors[t.team],0,1.2,0,.8,.04,.07);
+ const rubble=mesh(root,rockGeo,0x697462,0,.16,0,.6,.28,.6);rubble.visible=false;
+ const zone=new THREE.Mesh(new THREE.RingGeometry(DEFENSE.range-.025,DEFENSE.range,64),new THREE.MeshBasicMaterial({color:colors[t.team],transparent:true,opacity:.25,side:THREE.DoubleSide,depthWrite:false}));zone.rotation.x=-Math.PI/2;zone.position.y=.06;root.add(zone);
+ outpostViews.set(t.id,{root,turret,hp,rubble,zone});
+}
+for(const v of baseViews){const shield=new THREE.Mesh(new THREE.SphereGeometry(1.15,12,8),new THREE.MeshBasicMaterial({color:0xb9edda,transparent:true,opacity:.17,wireframe:true,depthWrite:false}));shield.position.y=.55;shield.scale.y=1.3;v.g.add(shield);v.shield=shield;}
 for(const w of [...createMatch({version:'0.3'}).walls,...createMatch({version:'0.3',map:'lanes'}).walls,...Object.keys(MAPS).flatMap(map=>createMatch({version:'0.3',experiment:'combined',map}).walls)]){
  if(wallViews.has(w.id))continue;
  const g=new THREE.Group();g.position.set(w.x,0,w.z);scene.add(g);
@@ -212,6 +224,12 @@ function inputs(){for(const code of released)if(performance.now()>=(tapUntil.get
 }));for(const team of [0,1])if(pendingOrders[team])result[team].order=pendingOrders[team];pendingOrders={};pendingFire=false;return result;}
 function resize(){const w=viewport.clientWidth,h=viewport.clientHeight;renderer.setSize(w,h);const aspect=w/h,v=Math.max(7.5,11.5/aspect);camera.left=-v*aspect;camera.right=v*aspect;camera.top=v;camera.bottom=-v;camera.updateProjectionMatrix();}new ResizeObserver(resize).observe(viewport);
 function visual(dt,events=[]){
+ $('defenseInfo').hidden=match.experiment!=='combined';
+ let ti=0;for(const [id,v] of outpostViews){const t=match.outposts?.find(t=>t.id===id),label=$('outpostLabel'+ti++);v.root.visible=!!t;label.hidden=!t||t.hp<=0;if(!t)continue;
+ v.root.position.set(t.x,0,t.z);v.turret.rotation.y=t.turret;v.turret.visible=v.hp.visible=v.zone.visible=t.hp>0;v.rubble.visible=t.hp<=0;v.hp.scale.x=.8*t.hp/t.maxHP;v.hp.position.x=-(.8-v.hp.scale.x)/2;
+ baseScreen.set(t.x,1.35,t.z).project(camera);label.style.left=((baseScreen.x*.5+.5)*viewport.clientWidth)+'px';label.style.top=((-baseScreen.y*.5+.5)*viewport.clientHeight)+'px';label.textContent=`ДОТ ${t.hp}/${t.maxHP}`;label.style.borderColor=t.team===0?'#49e3de':'#ff84a3';
+ }
+
  const floorStamp=match.map+':'+match.navRevision;
  if(floorKey!==floorStamp){
   floorKey=floorStamp;
@@ -233,7 +251,7 @@ function visual(dt,events=[]){
   if(missileMode){const t=trajectory(match,u);v.launcher.rotation.x=-Math.atan2(t.vy,Math.hypot(t.vx,t.vz)*.6);}
  }
  match.bases.forEach((b,i)=>{
-  baseViews[i].g.visible=b.hp>0;const health=$('baseHealth'+i),ratio=b.hp/b.maxHP;
+  baseViews[i].shield.material.opacity=match.time===0?.17:Math.max(.17,baseViews[i].shield.material.opacity-dt*.5);baseViews[i].shield.visible=!!b.protected&&b.hp>0;baseViews[i].g.visible=b.hp>0;const health=$('baseHealth'+i),ratio=b.hp/b.maxHP;
   baseScreen.set(b.x,2.05,b.z).project(camera);
   health.style.left=Math.max(58,Math.min(viewport.clientWidth-58,(baseScreen.x*.5+.5)*viewport.clientWidth))+'px';
   health.style.top=Math.max(55,Math.min(viewport.clientHeight-20,(-baseScreen.y*.5+.5)*viewport.clientHeight))+'px';
@@ -241,6 +259,7 @@ function visual(dt,events=[]){
   health.setAttribute('aria-valuenow',String(b.hp));health.setAttribute('aria-valuemax',String(b.maxHP));
   $('baseLabel'+i).textContent=`БАЗА ${b.hp}/${b.maxHP}`;$('baseFill'+i).style.width=(ratio*100)+'%';$('baseFill'+i).style.backgroundColor=ratio<=1/3?'#ff685e':i===0?'#49e3de':'#ff84a3';
  });
+ if(match.outposts){const vr=viewport.getBoundingClientRect();match.outposts.forEach((t,i)=>{const label=$('outpostLabel'+i);if(label.hidden)return;const lr=label.getBoundingClientRect(),br=$('baseHealth'+t.team).getBoundingClientRect();if(lr.top<br.bottom&&lr.bottom>br.top&&lr.left<br.right&&lr.right>br.left)label.style.left=(t.team===0?br.right-vr.left+lr.width/2+6:br.left-vr.left-lr.width/2-6)+'px';});}
  const living=new Set(match.shots.map(s=>s.id));
  for(const [id,v] of shotViews)if(!living.has(id)){scene.remove(v);shotViews.delete(id);const mark=marks.get(id);if(mark){scene.remove(mark);marks.delete(id);}}
  for(const s of match.shots){
@@ -250,7 +269,7 @@ function visual(dt,events=[]){
   }
   if(s.ballistic){let mark=marks.get(s.id);if(!mark){mark=new THREE.Mesh(ringGeo,mat(colors[s.team]));mark.rotation.x=-Math.PI/2;mark.scale.setScalar(.8);scene.add(mark);marks.set(s.id,mark);}mark.position.set(s.tx,.04,s.tz);mark.visible=match.experiment==='legacy'||!!warningFor(s);mark.scale.setScalar(s.splash); }
  }
- for(const e of events){if(e.type==='baseDestroyed'){const f=baseViews[e.team].fx;if(f.age<0){f.age=0;f.root.visible=true;f.ruins.visible=true;endReveal=2.6;beep('baseDestroyed');updateCard();}}if(e.type==='supply_collect'&&e.unitId==='0-0'){notice=e.resourceType==='repair'?`Ремонт +${e.healthEffect}♥`:`Запас +${e.ammoEffect} ракет`;noticeUntil=match.time+4;}if(!['supply','combined'].includes(match.experiment)&&e.type==='collect'&&e.id==='0-0'){notice={rocket:'Найдено: 3 ракеты',rapid:'Найдено: 12 скорострельных',repair:'Ремонт +2♥'}[e.loot];noticeUntil=match.time+4;}if(['fire','hit','impact','death','destroy','collect','shield_absorb','shield_recharge'].includes(e.type)){const fx=new THREE.Mesh(rockGeo,fxMat);fx.position.set(e.x,.2,e.z);fx.scale.setScalar(e.type==='fire'?.18:.32);scene.add(fx);flashes.push({mesh:fx,life:.2});beep(e.type==='fire'&&e.weapon==='arc'?'launch':e.type);if(e.type==='impact'&&e.r){fx.scale.setScalar(.4);flashes.at(-1).life=.35;const wave=new THREE.Mesh(ringGeo,fxMat);wave.rotation.x=-Math.PI/2;wave.position.set(e.x,.04,e.z);wave.scale.setScalar(.25);scene.add(wave);flashes.push({mesh:wave,life:.35});}}}
+ for(const e of events){if(e.type==='baseShieldDisabled'){notice=(e.team===0?'Наша':'Вражеская')+' база открыта';noticeUntil=match.time+4;}if(e.type==='baseBlocked'){baseViews[e.team].shield.material.opacity=.4;}if(e.type==='baseDestroyed'){const f=baseViews[e.team].fx;if(f.age<0){f.age=0;f.root.visible=true;f.ruins.visible=true;endReveal=2.6;beep('baseDestroyed');updateCard();}}if(e.type==='supply_collect'&&e.unitId==='0-0'){notice=e.resourceType==='repair'?`Ремонт +${e.healthEffect}♥`:`Запас +${e.ammoEffect} ракет`;noticeUntil=match.time+4;}if(!['supply','combined'].includes(match.experiment)&&e.type==='collect'&&e.id==='0-0'){notice={rocket:'Найдено: 3 ракеты',rapid:'Найдено: 12 скорострельных',repair:'Ремонт +2♥'}[e.loot];noticeUntil=match.time+4;}if(['fire','towerFire','hit','impact','death','destroy','outpostDestroyed','baseBlocked','collect','shield_absorb','shield_recharge'].includes(e.type)){const fx=new THREE.Mesh(rockGeo,fxMat);fx.position.set(e.x,.2,e.z);fx.scale.setScalar(e.type==='fire'?.18:.32);scene.add(fx);flashes.push({mesh:fx,life:.2});beep(e.type==='fire'&&e.weapon==='arc'?'launch':e.type);if(e.type==='impact'&&e.r){fx.scale.setScalar(.4);flashes.at(-1).life=.35;const wave=new THREE.Mesh(ringGeo,fxMat);wave.rotation.x=-Math.PI/2;wave.position.set(e.x,.04,e.z);wave.scale.setScalar(.25);scene.add(wave);flashes.push({mesh:wave,life:.35});}}}
  if(match.status==='playing'||match.status==='finished')for(let i=flashes.length-1;i>=0;i--){const f=flashes[i];f.life-=dt;f.mesh.scale.multiplyScalar(1+dt*4);if(f.life<=0){scene.remove(f.mesh);flashes.splice(i,1);}}
  animateRocketTrail(dt);animateBaseFX(dt);
  const tanks=[0,1].map(team=>match.units.find(u=>u.team===team&&u.kind==='tank'));
@@ -260,7 +279,7 @@ function visual(dt,events=[]){
   const u=tanks[0],t=trajectory(match,u);dots.visible=true;
   for(let i=0;i<18;i++){const f=(i+1)/18;dummy.position.set(t.ox+(t.x-t.ox)*(.6*f+.4*f*f),t.heightAt(f*t.time),t.oz+(t.z-t.oz)*(.6*f+.4*f*f));dummy.scale.setScalar(.4);dummy.updateMatrix();dots.setMatrixAt(i,dummy.matrix);}dots.instanceMatrix.needsUpdate=true;
  }
- const describe=(team)=>{const u=tanks[team],mins=match.units.filter(v=>v.team===team&&v.kind==='minion'&&v.hp>0).length;return `БАЗА ${match.bases[team].hp}/${match.cfg.baseHP} · ТАНК ${u.hp>0?u.hp+'♥':Math.max(0,u.respawn).toFixed(1)+'с'} · МИНЬОНЫ ${mins}/${match.cfg.minions}${u.armor?'\nБРОНЯ '+u.armor.charges+'/2'+(u.armor.charges<2?' · '+Math.max(0,ARMOR.rechargeSeconds-(match.time-u.armor.lastHit)).toFixed(1)+'с / '+Math.max(0,ARMOR.rechargeDistance-u.armor.moved).toFixed(1)+'м':''):''}`;};
+ const describe=(team)=>{const u=tanks[team],mins=match.units.filter(v=>v.team===team&&v.kind==='minion'&&v.hp>0).length;return `БАЗА ${match.bases[team].hp}/${match.cfg.baseHP} · ТАНК ${u.hp>0?u.hp+'♥':Math.max(0,u.respawn).toFixed(1)+'с'} · МИНЬОНЫ ${mins}/${match.cfg.minions}${match.outposts?'\n'+(match.bases[team].protected?'Защита: 2 ДОТа':'База открыта · '+match.outposts.filter(t=>t.team===team&&t.hp>0).length+' ДОТ'):''}${u.armor?'\nБРОНЯ '+u.armor.charges+'/2'+(u.armor.charges<2?' · '+Math.max(0,ARMOR.rechargeSeconds-(match.time-u.armor.lastHit)).toFixed(1)+'с / '+Math.max(0,ARMOR.rechargeDistance-u.armor.moved).toFixed(1)+'м':''):''}`;};
  $('blueScore').textContent=describe(0);$('pinkScore').textContent=describe(1);
  $('status').textContent=match.status==='playing'?`v${match.version} · ${Math.floor(match.time)}с`:match.status==='finished'?'БАЗА РАЗРУШЕНА':'ЛОКАЛЬНЫЙ БОЙ';
  $('rules').textContent=`v${match.version} · ${match.experiment!=='legacy'?PROFILES[match.experiment].label+' · '+(MAPS[match.map]?.label||'Два пути'):match.map==='maze'?'Лабиринт':'Полосы'} · ${match.bot?'Бирюзовый vs AI':'Два человека / одна клавиатура'}`;
@@ -274,7 +293,7 @@ function visual(dt,events=[]){
  $('hint').textContent=match.version==='0.1'?'WASD / Пробел · Стрелки / Enter · Esc — пауза':`Q/E · ,/. башни | v${match.version}${match.version==='0.3'?' · R/F и / Shift дальность · T/\\ дуга · G/− снаряд':''} · касание поля: прицел`;
  updateStudyHUD(tanks);
  $('stats').textContent=`${renderer.info.render.calls} calls · ${renderer.info.render.triangles} triangles`;
- viewport.dataset.snapshot=JSON.stringify({version:match.version,experiment:match.experiment,teamOrders:match.teamOrders,map:match.map,status:match.status,time:match.time,winner:match.winner,bases:match.bases.map(b=>b.hp),units:match.units.map(u=>({id:u.id,x:u.x,z:u.z,yaw:u.yaw,armor:u.armor,hp:u.hp,respawn:u.respawn,vx:u.vx,vz:u.vz,turret:u.turret,range:u.range,high:u.high,shell:u.shell,ammo:u.ammo,intent:u.intent,turns:u.turns,lane:u.assignedLane,stage:u.stage})),pickups:match.pickups,supply:supplyForecast(match),walls:match.walls.filter(w=>Number.isFinite(w.hp)).map(w=>({id:w.id,hp:w.hp})),shots:match.shots.map(s=>({x:s.x,z:s.z,y:s.y,ballistic:s.ballistic,owner:s.owner,weapon:s.weapon,remainingRange:s.remainingRange})),trailPuffs:smokeTrail.count,baseFX:baseViews.map(v=>v.fx.age),geometries:renderer.info.memory.geometries});
+ viewport.dataset.snapshot=JSON.stringify({version:match.version,experiment:match.experiment,teamOrders:match.teamOrders,map:match.map,status:match.status,time:match.time,winner:match.winner,bases:match.bases.map(b=>b.hp),baseShields:match.bases.map(b=>!!b.protected),outposts:match.outposts,units:match.units.map(u=>({id:u.id,x:u.x,z:u.z,yaw:u.yaw,armor:u.armor,hp:u.hp,respawn:u.respawn,vx:u.vx,vz:u.vz,turret:u.turret,range:u.range,high:u.high,shell:u.shell,ammo:u.ammo,intent:u.intent,turns:u.turns,lane:u.assignedLane,stage:u.stage})),pickups:match.pickups,supply:supplyForecast(match),walls:match.walls.filter(w=>Number.isFinite(w.hp)).map(w=>({id:w.id,hp:w.hp})),shots:match.shots.map(s=>({x:s.x,z:s.z,y:s.y,ballistic:s.ballistic,owner:s.owner,weapon:s.weapon,remainingRange:s.remainingRange})),trailPuffs:smokeTrail.count,baseFX:baseViews.map(v=>v.fx.age),geometries:renderer.info.memory.geometries});
 }
 function finalize(reason){if(run&&!run.finishReason){finishRun(run,match,reason);runStore.put(run);}}
 function queueOrder(team){if(!['orders','combined'].includes(match.experiment)||match.status!=='playing'||(match.bot&&team===1))return;const choices=['split','up','down'],current=pendingOrders[team]||match.teamOrders[team];pendingOrders[team]=choices[(choices.indexOf(current)+1)%3];if(fireGesture){fireGesture=null;$('fireKnob').style.transform='translate(-50%,-50%)';} }

@@ -1,4 +1,4 @@
-import {PROFILES,STUDY,ARMOR,SUPPLY,MAPS,abcMapId,mapWalls,studyWalls,routePoints} from './hybrid-experiments.mjs?v=20261008-t039-1';
+import {PROFILES,STUDY,DEFENSE,outpostPositions,ARMOR,SUPPLY,MAPS,abcMapId,mapWalls,studyWalls,routePoints} from './hybrid-experiments.mjs?v=20261008-t040-1';
 // Pure, deterministic local simulation. No DOM/Three/network authority claimed.
 export const CONFIG=Object.freeze({width:20,height:12,seed:20261006,baseHP:30,tankHP:5,minionHP:2,minions:2,tankRespawn:4,minionRespawn:6.5,speed:3.2,minionSpeed:1.25,shotDelay:.65,tankShotDelay:.95,tankArcDelay:3.6,tankDamage:2,tankArcDamage:3,minionShotDelay:1.2,damage:1,acceleration:10,drag:2.6,recoil:.7,hitImpulse:2.5,gravity:9,highFlight:2.4,lowFlight:1.2,arcShotDelay:2.8,maxArcShots:1,directRange:3.2,rocketRange:6,splashRadius:1,inheritVelocity:.15});
 export const VERSIONS=['0.1','0.2','0.3'];
@@ -23,8 +23,10 @@ export function createMatch({version='0.1',bot=false,map='maze',experiment='lega
  if(experiment!=='legacy'){result.teamOrders=['split','split'];result.splitNext=[0,0];result.units.filter(u=>u.kind==='minion').forEach(u=>{const i=Number(u.id.split('-')[1]);u.x=u.sx;u.z=u.sz=(i===1?-.8:.8);u.stage=0;u.assignedLane=null;});}
  if(['armor','combined'].includes(experiment))result.units.filter(u=>u.kind==='tank').forEach(u=>u.armor={charges:ARMOR.maxCharges,lastHit:0,moved:0});
  if(['supply','combined'].includes(experiment))result.supply={nextSpawn:SUPPLY.first,cycle:0};
+ if(experiment==='combined'){result.outposts=outpostPositions(map).map(p=>({...p,hp:DEFENSE.hp,maxHP:DEFENSE.hp,cooldown:0,turret:angle(teamDirection(p.team),0),aggro:null,aggroUntil:0,target:null}));result.bases.forEach(b=>b.protected=true);}
  return result;
 }
+function teamDirection(team){return team===0?1:-1;}
 function createMaze(){
  // Original layout: staggered gates, junctions and side pockets, rather than two straight lanes.
  const cells=new Map(),put=(x,z)=>cells.set(`${x},${z}`,{id:`maze-${x}-${z}`,x,z,w:.94,d:.94,h:.65,hp:3});
@@ -39,15 +41,17 @@ function createMaze(){
 }
 function random(u){u.rng=(Math.imul(u.rng,1664525)+1013904223)>>>0;return u.rng/4294967296;}
 function clearSegment(m,u,a,b){
+ if(m.outposts){const dx=b.x-a.x,dz=b.z-a.z,len=dx*dx+dz*dz;if(len>0)for(const t of m.outposts)if(t.hp>0){const f=clamp(((t.x-a.x)*dx+(t.z-a.z)*dz)/len,0,1);if(Math.hypot(a.x+f*dx-t.x,a.z+f*dz-t.z)<u.r+t.r+1e-5)return false;}}
+
  const n=Math.max(1,Math.ceil(Math.hypot(b.x-a.x,b.z-a.z)/.15));
  for(let i=1;i<=n;i++)if(blocked(m,u,a.x+(b.x-a.x)*i/n,a.z+(b.z-a.z)*i/n))return false;
  return true;
 }
 export function navigation(m){
  if(m.navCache&&m.navCache.revision===m.navRevision)return m.navCache;
- const nodes=[],lookup=new Map(),probe={r:.38};
- for(let z=-5;z<=5;z++)for(let x=-9;x<=9;x++)if(!blocked(m,probe,x,z)){const n={id:nodes.length,x,z,edges:[]};nodes.push(n);lookup.set(`${x},${z}`,n);}
- for(const n of nodes)for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]){const next=lookup.get(`${n.x+dx},${n.z+dz}`);if(next&&clearSegment(m,probe,n,next))n.edges.push(next.id);}
+ const nodes=[],lookup=new Map(),probe={r:.38},spacing=m.outposts?.5:1;
+ for(let z=-5;z<=5;z+=spacing)for(let x=-9;x<=9;x+=spacing)if(!blocked(m,probe,x,z)){const n={id:nodes.length,x,z,edges:[]};nodes.push(n);lookup.set(`${x},${z}`,n);}
+ for(const n of nodes)for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]){const next=lookup.get(`${n.x+dx*spacing},${n.z+dz*spacing}`);if(next&&clearSegment(m,probe,n,next))n.edges.push(next.id);}
  m.navCache={revision:m.navRevision,nodes};return m.navCache;
 }
 function nearest(nodes,p,filter=()=>true){let best=null,score=Infinity;for(const n of nodes)if(filter(n)){const d=Math.hypot(n.x-p.x,n.z-p.z);if(d<score){score=d;best=n;}}return best;}
@@ -58,7 +62,7 @@ function distanceField(nodes,goal,filter=()=>true){
 }
 function steering(u,p){const dx=p.x-u.x,dz=p.z-u.z;return {x:clamp(dx*2,-1,1),z:clamp(dz*2,-1,1)};}
 function route(m,u,goal){
- const {nodes}=navigation(m),from=nearest(nodes,u);if(!from)return {x:0,z:0};
+ const {nodes}=navigation(m);let from=nearest(nodes,u);if(m.outposts&&from&&!clearSegment(m,u,u,from))from=nearest(nodes,u,n=>clearSegment(m,u,u,n));if(!from)return {x:0,z:0};
  const dir=u.team===0?1:-1,filter=n=>u.intent!=='defend'||from.x*dir>-1.5||n.x*dir<=-1.5;
  const dest=nearest(nodes,goal,filter),distances=distanceField(nodes,dest,filter);
  if(!u.route||u.route.revision!==m.navRevision||u.route.dest!==dest.id||m.time>u.route.until||u.stuck>.8){
@@ -128,6 +132,7 @@ function circleBox(u,x,z,w){const nx=clamp(x,w.x-w.w/2,w.x+w.w/2),nz=clamp(z,w.z
 export function blocked(m,u,x,z){
  if(Math.abs(x)>m.cfg.width/2-u.r||Math.abs(z)>m.cfg.height/2-u.r)return true;
  if(m.walls.some(w=>w.hp>0&&circleBox(u,x,z,w)))return true;
+ if(m.outposts?.some(t=>t.hp>0&&Math.hypot(x-t.x,z-t.z)<u.r+t.r))return true;
  return m.bases.some(b=>Math.hypot(x-b.x,z-b.z)<u.r+b.r);
 }
 function move(m,u,dx,dz){
@@ -151,18 +156,25 @@ function collideUnits(m){
 }
 function damage(m,target,amount,s){
  if(target.hp<=0)return;
- const rawDamage=amount;
+ const rawDamage=amount,attacker={id:s.owner,team:s.team,kind:s.ownerKind||m.units.find(u=>u.id===s.owner)?.kind||'tower'};
+ if(target.protected){m.events.push({type:'baseBlocked',team:target.team,x:target.x,z:target.z,attacker,target:`base-${target.team}`,targetType:'base',weapon:s.weapon,rawDamage,appliedDamage:0});return;}
+ if(target.kind==='tower'){
+  const applied=Math.min(target.hp,amount);target.hp=Math.max(0,target.hp-amount);target.lastHit=m.time;target.lastAttacker=attacker.id;m.events.push({type:'outpostDamage',id:target.id,team:target.team,x:target.x,z:target.z,attacker,target:target.id,targetType:'tower',weapon:s.weapon,rawDamage,appliedDamage:applied});
+  if(target.hp===0){target.target=target.aggro=null;m.navRevision++;m.events.push({type:'outpostDestroyed',id:target.id,team:target.team,lane:target.lane,x:target.x,z:target.z,attacker,targetType:'tower'});const b=m.bases[target.team];if(b.protected){b.protected=false;m.events.push({type:'baseShieldDisabled',team:b.team,target:`base-${b.team}`,targetType:'base',outpostId:target.id,x:b.x,z:b.z,attacker});}}return;
+ }
+
  if(target.armor){
   target.armor.lastHit=m.time;target.armor.moved=0;
   const incoming=angle(-s.vx,-s.vz),difference=Math.atan2(Math.sin(incoming-target.yaw),Math.cos(incoming-target.yaw));
   if(target.shield<=0&&!s.ballistic&&['direct','rapid'].includes(s.weapon)&&target.armor.charges>0&&Math.abs(difference)<=ARMOR.halfAngle+1e-9){
    const absorbed=Math.min(1,amount);amount-=absorbed;target.armor.charges--;
-   m.events.push({type:'shield_absorb',id:target.id,team:target.team,attacker:{id:s.owner,team:s.team},weapon:s.weapon,rawDamage,absorbedDamage:absorbed,appliedDamage:Math.min(target.hp,amount),charges:target.armor.charges,x:target.x,z:target.z});
+   m.events.push({type:'shield_absorb',id:target.id,team:target.team,attacker:{id:s.owner,team:s.team,...(m.outposts?{kind:attacker.kind}: {})},...(m.outposts?{targetType:target.kind}: {}),weapon:s.weapon,rawDamage,absorbedDamage:absorbed,appliedDamage:Math.min(target.hp,amount),charges:target.armor.charges,x:target.x,z:target.z});
   }
  }
- if(target.shield>0)return;const applied=Math.min(target.hp,amount);target.hp=Math.max(0,target.hp-amount);
- m.events.push({type:'hit',x:target.x,z:target.z,team:target.team,...({attacker:{id:s.owner,team:s.team,kind:m.units.find(u=>u.id===s.owner).kind},target:target.id||`base-${target.team}`,weapon:s.weapon,rawDamage,appliedDamage:applied})});
- if(!target.kind)m.events.push({type:'baseDamage',attacker:{id:s.owner,team:s.team,kind:m.units.find(u=>u.id===s.owner).kind},target:`base-${target.team}`,weapon:s.weapon,rawDamage,appliedDamage:applied});
+ if(target.shield>0)return;const applied=Math.min(target.hp,amount);target.hp=Math.max(0,target.hp-amount);if(m.outposts&&!target.kind&&applied>0){target.lastHit=m.time;target.lastAttacker=attacker.id;}
+ m.events.push({type:'hit',x:target.x,z:target.z,team:target.team,...({attacker:{id:s.owner,team:s.team,kind:attacker.kind},target:target.id||`base-${target.team}`,...(m.outposts?{targetType:target.kind||'base'}: {}),weapon:s.weapon,rawDamage,appliedDamage:applied})});
+ if(applied>0&&target.kind==='tank'&&attacker.kind==='tank'&&m.outposts){const a=m.units.find(u=>u.id===s.owner);for(const t of m.outposts)if(t.team===target.team&&t.hp>0&&Math.hypot(t.x-target.x,t.z-target.z)<=DEFENSE.range&&towerEligible(m,t,a)){t.aggro=a.id;t.aggroUntil=m.time+DEFENSE.retaliation;m.events.push({type:'outpostAggro',id:t.id,team:t.team,target:a.id,targetType:'tank',attacker,until:t.aggroUntil,x:t.x,z:t.z});}}
+ if(!target.kind)m.events.push({type:'baseDamage',attacker:{id:s.owner,team:s.team,kind:attacker.kind},target:`base-${target.team}`,weapon:s.weapon,rawDamage,appliedDamage:applied});
  if(!target.kind&&target.hp===0)m.events.push({type:'baseDestroyed',team:target.team,x:target.x,z:target.z});
  if(target.kind&&target.hp===0){if(['supply','combined'].includes(m.experiment)){target.ammo={rocket:0,rapid:0};target.shell='arc';}target.respawn=target.kind==='tank'?m.cfg.tankRespawn:m.cfg.minionRespawn;target.vx=target.vz=0;m.events.push({type:'death',id:target.id,x:target.x,z:target.z,...(m.experiment!=='legacy'?{team:target.team,kind:target.kind,lane:target.assignedLane}: {})});}
 }
@@ -206,6 +218,7 @@ export function fire(m,u){
  m.events.push({type:'fire',id:u.id,x:shot.x,z:shot.z,weapon,...({team:u.team,kind:u.kind,shotId:shot.id,aim:u.turret,target:{x:shot.tx??shot.x+dx*shot.remainingRange,z:shot.tz??shot.z+dz*shot.remainingRange},rawDamage:shot.damage})});return shot;
 }
 function ai(m,u){
+ if(m.outposts)return defenseAI(m,u);
  if(m.experiment!=='legacy')return studyAI(m,u);
  if(m.version==='0.3'&&m.map==='maze')return mazeAI(m,u);
  const base=m.bases[1-u.team],dir=u.team===0?1:-1;
@@ -261,10 +274,10 @@ export function projectilePose(s,age=s.age){
 }
 function explode(m,s){
  m.events.push({type:'impact',x:s.x,z:s.z,y:s.y,r:s.splash});
- for(const u of [...m.units.filter(u=>u.team!==s.team),m.bases[1-s.team]]){
+ for(const u of [...m.units.filter(u=>u.team!==s.team),...(m.outposts||[]).filter(t=>t.team!==s.team),m.bases[1-s.team]]){
   const dx=u.x-s.x,dz=u.z-s.z,d=Math.hypot(dx,dz);
   if(u.hp>0&&d<u.r+s.splash&&s.y<u.h+.25){
-   if(u.kind){const strength=m.cfg.hitImpulse*Math.max(.25,1-d/(u.r+s.splash)),nx=d>.001?dx/d:Math.sin(s.turret||0),nz=d>.001?dz/d:1;u.vx+=nx*strength;u.vz+=nz*strength;}
+   if(u.kind&&u.kind!=='tower'){const strength=m.cfg.hitImpulse*Math.max(.25,1-d/(u.r+s.splash)),nx=d>.001?dx/d:Math.sin(s.turret||0),nz=d>.001?dz/d:1;u.vx+=nx*strength;u.vz+=nz*strength;}
    damage(m,u,s.damage,s);
   }
  }
@@ -284,7 +297,7 @@ export function step(m,dt,inputs={}){
   if(u.hp<=0){
    u.respawn-=dt;
    if(u.respawn<=0&&!blocked(m,u,u.sx,u.sz)&&!m.units.some(o=>o!==u&&o.hp>0&&Math.hypot(o.x-u.sx,o.z-u.sz)<o.r+u.r)){
-    u.x=u.sx;u.z=u.sz;u.hp=u.maxHP;u.ammo={rocket:0,rapid:0};u.shell='arc';u.cooldown=.3;u.shield=.8;u.vx=u.vz=0;u.patrol=null;u.route=null;u.stuck=0;u.bestDistance=undefined;u.detours=0;if(m.experiment!=='legacy'){u.stage=0;u.assignedLane=null;}if(u.armor)u.armor={charges:ARMOR.maxCharges,lastHit:m.time,moved:0};m.events.push({type:'respawn',id:u.id,x:u.x,z:u.z,...(m.experiment!=='legacy'?{team:u.team,kind:u.kind}: {})});
+    u.x=u.sx;u.z=u.sz;u.hp=u.maxHP;u.ammo={rocket:0,rapid:0};u.shell='arc';u.cooldown=.3;u.shield=.8;u.vx=u.vz=0;u.patrol=null;u.route=null;u.stuck=0;u.bestDistance=undefined;u.detours=0;if(m.experiment!=='legacy'){u.stage=0;u.assignedLane=null;}if(u.armor)u.armor={charges:ARMOR.maxCharges,lastHit:m.time,moved:0};if(m.outposts){u.siegeId=null;u.siegeGun=false;}m.events.push({type:'respawn',id:u.id,x:u.x,z:u.z,...(m.experiment!=='legacy'?{team:u.team,kind:u.kind}: {})});
    }
    continue;
   }
@@ -308,6 +321,7 @@ export function step(m,dt,inputs={}){
   collect(m,u);if(c.fire)fire(m,u);
  }
  collideUnits(m);
+ if(m.outposts)for(const t of m.outposts)stepTower(m,t,dt);
  m.shots=m.shots.filter(s=>{
   s.life-=dt;
   const n=Math.max(1,Math.ceil(Math.hypot(s.vx,s.vz)*(s.ballistic?1.4:1)*dt/.08),Math.ceil(dt*120));
@@ -317,10 +331,10 @@ export function step(m,dt,inputs={}){
    if(s.life<=0||Math.abs(s.x)>m.cfg.width/2||Math.abs(s.z)>m.cfg.height/2)return false;
    const wall=m.walls.find(w=>w.hp>0&&s.y<=w.h+.07&&Math.abs(s.x-w.x)<=w.w/2+.07&&Math.abs(s.z-w.z)<=w.d/2+.07);
    if(wall){if(s.ballistic||s.weapon==='rocket')explode(m,s);else{damageWall(m,wall,s.damage);m.events.push({type:'impact',x:s.x,z:s.z});}return false;}
-   const target=[...m.units.filter(u=>u.team!==s.team&&u.hp>0),m.bases[1-s.team]].find(u=>u.hp>0&&s.y<=u.h+.07&&Math.hypot(u.x-s.x,u.z-s.z)<u.r+.07);
+   const target=[...m.units.filter(u=>u.team!==s.team&&u.hp>0),...(s.ownerKind==='tower'?[]:(m.outposts||[]).filter(t=>t.team!==s.team)),...(s.ownerKind==='tower'?[]:[m.bases[1-s.team]])].find(u=>u.hp>0&&s.y<=u.h+.07&&Math.hypot(u.x-s.x,u.z-s.z)<u.r+.07);
    if(target){
     if(s.ballistic||s.weapon==='rocket'){explode(m,s);return false;}
-    if(m.version!=='0.1'&&target.kind){const speed=Math.hypot(s.vx,s.vz);target.vx+=s.vx/speed*m.cfg.hitImpulse;target.vz+=s.vz/speed*m.cfg.hitImpulse;}
+    if(m.version!=='0.1'&&target.kind&&target.kind!=='tower'){const speed=Math.hypot(s.vx,s.vz);target.vx+=s.vx/speed*m.cfg.hitImpulse;target.vz+=s.vz/speed*m.cfg.hitImpulse;}
     damage(m,target,s.damage,s);return false;
    }
    if(!s.ballistic&&s.remainingRange<=1e-9)return false;
@@ -353,4 +367,35 @@ function studyAI(m,u){
  }
  const d=Math.hypot(target.x-u.x,target.z-u.z),clear=lineOfFire(m,u,target);if(clear&&d<(target===base?(u.kind==='tank'?5:3):2.3))motion={x:0,z:0};
  return {...motion,aim:angle(target.x-u.x,target.z-u.z),range:clamp(d,2,8),fire:clear&&d<(u.shell==='arc'?6.5:m.cfg.directRange+u.r+target.r)};
+}
+
+function towerEligible(m,t,u){return !!u&&u.hp>0&&u.team!==t.team&&Math.hypot(u.x-t.x,u.z-t.z)<=DEFENSE.range+1e-9&&lineOfFire(m,t,u);}
+function stepTower(m,t,dt){
+ if(t.hp<=0)return;t.cooldown=Math.max(0,t.cooldown-dt);
+ let target=m.units.find(u=>u.id===t.aggro);
+ if(m.time>=t.aggroUntil||!towerEligible(m,t,target)){t.aggro=null;t.aggroUntil=0;target=null;}
+ if(!target)target=m.units.filter(u=>towerEligible(m,t,u)).sort((a,b)=>Math.hypot(a.x-t.x,a.z-t.z)-Math.hypot(b.x-t.x,b.z-t.z)||a.id.localeCompare(b.id))[0];
+ t.target=target?.id||null;if(!target)return;
+ const dx=target.x-t.x,dz=target.z-t.z,d=Math.hypot(dx,dz);t.turret=angle(dx,dz);if(t.cooldown>0)return;
+ const shot={id:m.nextShot++,owner:t.id,ownerKind:'tower',team:t.team,x:t.x+dx/d*(t.r+.08),z:t.z+dz/d*(t.r+.08),y:.35,vx:dx/d*8,vz:dz/d*8,life:2.5,ballistic:false,weapon:'direct',damage:DEFENSE.damage,remainingRange:DEFENSE.range};m.shots.push(shot);t.cooldown=DEFENSE.cooldown;m.events.push({type:'towerFire',id:t.id,team:t.team,kind:'tower',target:target.id,targetType:target.kind,shotId:shot.id,x:shot.x,z:shot.z,weapon:shot.weapon,rawDamage:shot.damage});
+}
+function defenseAI(m,u){
+ const dir=teamDirection(u.team),base=m.bases[1-u.team],enemy=m.outposts.filter(t=>t.team!==u.team&&t.hp>0);let target=base,motion;
+ if(u.kind==='minion'){
+  // Preserve branch assignment, then stop on the route to siege its own lane's fort.
+  const original=studyAI(m,u),tower=enemy.find(t=>t.lane===(u.assignedLane||'up'));if(!tower)return original;
+  target=tower;u.intent='siege';motion={x:original.x,z:original.z};u.shell='direct';
+  const close=m.units.filter(o=>o.team!==u.team&&o.hp>0&&Math.hypot(o.x-u.x,o.z-u.z)<2.5&&lineOfFire(m,u,o)).sort((a,b)=>Math.hypot(a.x-u.x,a.z-u.z)-Math.hypot(b.x-u.x,b.z-u.z)||a.id.localeCompare(b.id))[0];if(close&&Math.hypot(tower.x-u.x,tower.z-u.z)>3.9){target=close;u.intent='engage';}
+ }else{
+  const own=m.bases[u.team],forts=m.outposts.filter(t=>t.team===u.team&&t.hp>0),threat=m.units.filter(o=>o.team!==u.team&&o.hp>0&&lineOfFire(m,u,o)&&(Math.hypot(o.x-own.x,o.z-own.z)<4.8||(own.lastAttacker===o.id&&m.time-own.lastHit<4)||forts.some(t=>Math.hypot(o.x-t.x,o.z-t.z)<3.4||(t.lastAttacker===o.id&&m.time-t.lastHit<4)))).sort((a,b)=>Math.hypot(a.x-own.x,a.z-own.z)-Math.hypot(b.x-own.x,b.z-own.z))[0];
+  if(threat){target=threat;u.intent='defend';u.shell='direct';}
+  else{
+   const wave=m.units.filter(o=>o.team===u.team&&o.kind==='minion'&&o.hp>0).sort((a,b)=>b.x*dir-a.x*dir)[0];
+   target=(base.protected?enemy.find(t=>t.lane===wave?.assignedLane)||enemy[0]:null)||base;u.intent='attack';if(u.siegeId!==target.id){u.siegeId=target.id;u.siegeGun=false;}if(target.kind==='tower'&&wave&&Math.hypot(wave.x-target.x,wave.z-target.z)<DEFENSE.range&&Math.hypot(u.x-target.x,u.z-target.z)<3.9)u.siegeGun=true;u.shell=u.siegeGun?'direct':'arc';
+  }
+  const goal={x:target.x-dir*(target.kind==='tower'?2.8:target===base?3.2:1.8),z:target.z};motion=clearSegment(m,u,u,goal)?steering(u,goal):route(m,u,goal);
+ }
+ u.target=target.id||`base-${target.team}`;
+ const d=Math.hypot(target.x-u.x,target.z-u.z),clear=lineOfFire(m,u,target);if(clear&&d<(u.kind==='minion'?2.8:target.kind==='tower'?2.8:u.shell==='arc'?4:2.3))motion={x:0,z:0};
+ return {...motion,aim:angle(target.x-u.x,target.z-u.z),range:clamp(d,2,8),fire:!target.protected&&clear&&d<(u.shell==='arc'?6.5:m.cfg.directRange+u.r+target.r)};
 }

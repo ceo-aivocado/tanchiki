@@ -20,3 +20,5 @@ body:is([data-experiment="armor"],[data-experiment="combined"]) .scoreboard>span
 
 .supply-point{position:absolute;transform:translate(-50%,-100%);background:#193e32c9;color:#fff;border:1px dashed #b6d2b3;border-radius:6px;padding:4px;font-size:11px;pointer-events:none;white-space:nowrap}.supply-point[data-active=true]{border-style:solid;background:#376239ee}.supply-point[hidden]{display:none}
 body[data-experiment="combined"] #ordersPanel{top:70px}@media(max-width:900px){body[data-experiment="combined"] #ordersPanel{top:54px}}
+
+.outpost-label{position:absolute;transform:translate(-50%,-100%);padding:2px 4px;background:#183c32de;color:#fff;border:1px solid #cbd5b7;border-radius:4px;font-size:10px;pointer-events:none;white-space:nowrap}.outpost-label[hidden],#defenseInfo[hidden]{display:none}#defenseInfo{font-size:12px;background:#d5e5b822;padding:8px;border-radius:7px}body[data-experiment="combined"] #ordersPanel{top:91px}@media(max-width:900px){body[data-experiment="combined"] #ordersPanel{top:74px}.outpost-label{font-size:9px}}
